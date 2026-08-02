@@ -32,7 +32,38 @@ export type ResolveManagedSessionScopeResult =
 	| { kind: "resolved"; scope: ManagedSessionScope }
 	| {
 			kind: "error";
+<<<<<<< HEAD
 			code: ManagedScopeErrorCode;
+||||||| parent of 49ff89414 (feat(coding-agent): import Codex sessions (redo of #3714))
+			code:
+				| "cwd_missing"
+				| "cwd_not_directory"
+				| "identity_unavailable"
+				| "network_unsupported"
+				| "sessions_root_unavailable"
+				| "binding_conflict"
+				| "binding_invalid"
+				| "migration_busy"
+				| "atomic_unavailable"
+				| "durability_not_provable"
+				| "durability_failed"
+				| "invalid_request";
+=======
+			code:
+				| "cwd_missing"
+				| "cwd_not_directory"
+				| "identity_unavailable"
+				| "network_unsupported"
+				| "sessions_root_unavailable"
+				| "binding_conflict"
+				| "binding_invalid"
+				| "migration_busy"
+				| "atomic_unavailable"
+				| "durability_not_provable"
+				| "durability_failed"
+				| "artifact_capacity_exceeded"
+				| "invalid_request";
+>>>>>>> 49ff89414 (feat(coding-agent): import Codex sessions (redo of #3714))
 			message: string;
 	  };
 

@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+
+- Managed session files may now be up to 128 MiB, keeping retained-tree validation aligned with large resumable session transcripts and checkpoints.
+- Recovery filesystem roots can now open descriptor-retained regular-file streams with no-follow component traversal for bounded external-session ingestion.
+
 
 ### Fixed
 
