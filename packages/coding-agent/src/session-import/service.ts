@@ -123,6 +123,14 @@ interface ImportRecoveryReceipt {
 	targetSessionId: string;
 }
 
+type RecoveryReceiptInspection = { kind: "absent" } | { kind: "present"; receipt: ImportRecoveryReceipt };
+
+type TranscriptProvenanceInspection = { kind: "absent" } | { kind: "present"; provenance: ImportProvenance | null };
+
+function recoveryUncertain(): Error {
+	return new Error("recovery_uncertain");
+}
+
 interface StagedTranscript {
 	relativePath: string;
 	absolutePath: string;
@@ -468,24 +476,72 @@ async function readManifest(file: string): Promise<ImportManifest | null> {
 		return null;
 	}
 }
-async function readTranscriptProvenance(file: string): Promise<ImportProvenance | null> {
+async function readTranscriptProvenance(file: string): Promise<TranscriptProvenanceInspection> {
+	let handle: fs.FileHandle;
 	try {
-		const handle = await fs.open(file, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW);
-		try {
-			const buffer = Buffer.alloc(512 * 1024);
-			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-			for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n")) {
-				if (!line.includes('"customType":"session-import-provenance"')) continue;
-				const entry = JSON.parse(line) as { customType?: string; data?: ImportProvenance };
-				if (entry.customType === "session-import-provenance" && entry.data?.schemaVersion === 1) return entry.data;
-			}
-		} finally {
-			await handle.close();
-		}
-	} catch {
-		return null;
+		handle = await fs.open(file, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
+		throw recoveryUncertain();
 	}
-	return null;
+
+	try {
+		const initial = await handle.stat({ bigint: true });
+		if (!initial.isFile() || initial.nlink !== 1n) throw recoveryUncertain();
+		const buffer = Buffer.alloc(512 * 1024);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		const text = buffer.subarray(0, bytesRead).toString("utf8");
+		const lines = text.split("\n");
+		const completeLineCount = text.endsWith("\n") || bytesRead < buffer.length ? lines.length : lines.length - 1;
+		let provenance: ImportProvenance | null = null;
+		for (let index = 0; index < completeLineCount; index++) {
+			const line = lines[index];
+			if (!line) continue;
+			let value: unknown;
+			try {
+				value = JSON.parse(line) as unknown;
+			} catch {
+				throw recoveryUncertain();
+			}
+			if (!value || typeof value !== "object" || Array.isArray(value)) throw recoveryUncertain();
+			const entry = value as { customType?: unknown; data?: unknown };
+			if (entry.customType !== "session-import-provenance") continue;
+			if (
+				!entry.data ||
+				typeof entry.data !== "object" ||
+				Array.isArray(entry.data) ||
+				(entry.data as { schemaVersion?: unknown }).schemaVersion !== 1
+			)
+				throw recoveryUncertain();
+			if (provenance) throw recoveryUncertain();
+			provenance = entry.data as ImportProvenance;
+		}
+		const terminal = await handle.stat({ bigint: true });
+		const named = await fs.lstat(file, { bigint: true });
+		if (
+			!terminal.isFile() ||
+			terminal.nlink !== 1n ||
+			terminal.dev !== initial.dev ||
+			terminal.ino !== initial.ino ||
+			terminal.size !== initial.size ||
+			terminal.mtimeNs !== initial.mtimeNs ||
+			terminal.ctimeNs !== initial.ctimeNs ||
+			named.isSymbolicLink() ||
+			!named.isFile() ||
+			named.nlink !== 1n ||
+			named.dev !== initial.dev ||
+			named.ino !== initial.ino ||
+			named.size !== initial.size ||
+			named.mtimeNs !== initial.mtimeNs ||
+			named.ctimeNs !== initial.ctimeNs
+		)
+			throw recoveryUncertain();
+		return { kind: "present", provenance };
+	} catch {
+		throw recoveryUncertain();
+	} finally {
+		await handle.close().catch(() => undefined);
+	}
 }
 
 async function findExisting(
@@ -503,7 +559,9 @@ async function findExisting(
 		const provenance = manifest.provenance;
 		const candidateKey = provenanceKey(provenance);
 		if (candidateKey !== key || provenance.targetSessionId !== candidate.sessionId) continue;
-		const transcriptProvenance = await readTranscriptProvenance(candidate.path);
+		const transcriptInspection = await readTranscriptProvenance(candidate.path);
+		if (transcriptInspection.kind === "absent") continue;
+		const transcriptProvenance = transcriptInspection.provenance;
 		if (!transcriptProvenance || JSON.stringify(transcriptProvenance) !== JSON.stringify(provenance)) continue;
 		const quarantinePath = path.join(artifactDirectory, "codex-quarantine.jsonl");
 		if (provenance.quarantine.present) {
@@ -575,6 +633,17 @@ function classifyFailure(error: unknown, sourceSessionId?: string): SessionImpor
 		};
 	}
 	const message = error instanceof Error ? error.message : "Unknown import failure";
+	if (message === "recovery_uncertain")
+		return {
+			status: "failed",
+			provider: "codex",
+			sourceSessionId,
+			code: "publish_uncertain",
+			phase: "internal",
+			retryable: true,
+			message: "Import recovery state is uncertain; retry will reconcile it.",
+			causeCode: message,
+		};
 	if (
 		message === "content_too_large" ||
 		message === "artifact_capacity_exceeded" ||
@@ -631,26 +700,36 @@ async function removeStaging(store: ManagedSessionDescendantStore, relativePath:
 		// Exact managed cleanup is best-effort; recovery owns ambiguous staging.
 	}
 }
-async function readRecoveryReceipt(file: string): Promise<ImportRecoveryReceipt | null> {
-	const handle = await fs.open(file, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW).catch(() => null);
-	if (!handle) return null;
+async function readRecoveryReceipt(file: string): Promise<RecoveryReceiptInspection> {
+	let handle: fs.FileHandle;
+	try {
+		handle = await fs.open(file, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
+		throw recoveryUncertain();
+	}
+
 	try {
 		const stat = await handle.stat({ bigint: true });
-		if (!stat.isFile() || stat.nlink !== 1n || stat.size > 64n * 1024n) return null;
-		const value = JSON.parse(await handle.readFile("utf8")) as ImportRecoveryReceipt;
+		if (!stat.isFile() || stat.nlink !== 1n || stat.size > 64n * 1024n) throw recoveryUncertain();
+		const value = JSON.parse(await handle.readFile("utf8")) as unknown;
+		const record = value as Partial<ImportRecoveryReceipt>;
 		if (
-			value.schemaVersion !== 1 ||
-			typeof value.importKey !== "string" ||
-			typeof value.targetSessionId !== "string" ||
-			typeof value.artifactDirectory !== "string" ||
-			!IMPORT_ARTIFACT_DIRECTORY.test(value.artifactDirectory)
+			!value ||
+			typeof value !== "object" ||
+			Array.isArray(value) ||
+			record.schemaVersion !== 1 ||
+			typeof record.importKey !== "string" ||
+			typeof record.targetSessionId !== "string" ||
+			typeof record.artifactDirectory !== "string" ||
+			!IMPORT_ARTIFACT_DIRECTORY.test(record.artifactDirectory)
 		)
-			return null;
-		return value;
+			throw recoveryUncertain();
+		return { kind: "present", receipt: record as ImportRecoveryReceipt };
 	} catch {
-		return null;
+		throw recoveryUncertain();
 	} finally {
-		await handle.close();
+		await handle.close().catch(() => undefined);
 	}
 }
 function readManifestFromSnapshot(
@@ -688,10 +767,17 @@ async function reconcileStaleArtifactDirectory(
 	expectedTargetSessionId: string,
 ): Promise<void> {
 	const absolutePath = path.join(scopeDirectory, relativePath);
-	const stat = await fs.lstat(absolutePath).catch(() => null);
+	const stat = await fs.lstat(absolutePath).catch(error => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw recoveryUncertain();
+	});
 	if (!stat) return;
 	if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("destination_conflict");
-	if (await fs.lstat(transcriptPath).catch(() => null)) throw new Error("destination_conflict");
+	const transcriptStat = await fs.lstat(transcriptPath).catch(error => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw recoveryUncertain();
+	});
+	if (transcriptStat) throw new Error("destination_conflict");
 	const snapshot = store.captureTree(relativePath);
 	const manifest = readManifestFromSnapshot(store, relativePath, snapshot);
 	if (manifest) {
@@ -704,7 +790,11 @@ async function reconcileStaleArtifactDirectory(
 		throw new Error("destination_conflict");
 	}
 	store.removeTreeExpected(relativePath, snapshot);
-	if (await fs.lstat(absolutePath).catch(() => null)) throw new Error("destination_conflict");
+	const remaining = await fs.lstat(absolutePath).catch(error => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw recoveryUncertain();
+	});
+	if (remaining) throw new Error("destination_conflict");
 }
 async function reconcileImportStaging(store: ManagedSessionDescendantStore, scopeDirectory: string): Promise<void> {
 	const stagingRoot = path.join(scopeDirectory, IMPORT_INTERNAL_DIRECTORY, IMPORT_STAGING_DIRECTORY);
@@ -715,18 +805,28 @@ async function reconcileImportStaging(store: ManagedSessionDescendantStore, scop
 	for (const entry of entries) {
 		if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("identity_mismatch");
 		const relativePath = `${IMPORT_INTERNAL_DIRECTORY}/${IMPORT_STAGING_DIRECTORY}/${entry.name}`;
-		const receipt = await readRecoveryReceipt(path.join(stagingRoot, entry.name, IMPORT_RECOVERY_RECEIPT));
-		if (receipt) {
-			const transcriptPath = path.join(scopeDirectory, `${receipt.artifactDirectory}.jsonl`);
-			if (!(await fs.lstat(transcriptPath).catch(() => null)))
-				await reconcileStaleArtifactDirectory(
-					store,
-					scopeDirectory,
-					receipt.artifactDirectory,
-					transcriptPath,
-					receipt.importKey,
-					receipt.targetSessionId,
-				);
+		const receiptInspection = await readRecoveryReceipt(path.join(stagingRoot, entry.name, IMPORT_RECOVERY_RECEIPT));
+		if (receiptInspection.kind === "absent") continue;
+		const receipt = receiptInspection.receipt;
+		const transcriptPath = path.join(scopeDirectory, `${receipt.artifactDirectory}.jsonl`);
+		const transcriptInspection = await readTranscriptProvenance(transcriptPath);
+		if (transcriptInspection.kind === "absent") {
+			await reconcileStaleArtifactDirectory(
+				store,
+				scopeDirectory,
+				receipt.artifactDirectory,
+				transcriptPath,
+				receipt.importKey,
+				receipt.targetSessionId,
+			);
+		} else {
+			const provenance = transcriptInspection.provenance;
+			if (
+				!provenance ||
+				provenanceKey(provenance) !== receipt.importKey ||
+				provenance.targetSessionId !== receipt.targetSessionId
+			)
+				throw recoveryUncertain();
 		}
 		const snapshot = store.captureTree(relativePath);
 		store.removeTreeExpected(relativePath, snapshot);

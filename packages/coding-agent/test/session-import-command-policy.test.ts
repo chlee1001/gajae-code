@@ -1,4 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import * as path from "node:path";
+import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
+import { TempDir } from "@gajae-code/utils";
+import { AcpAgent } from "../src/modes/acp/acp-agent";
+import { writeBrokerDiscovery } from "../src/sdk/broker/discovery";
 import { ACP_BUILTIN_SLASH_COMMANDS, executeAcpBuiltinSlashCommand } from "../src/slash-commands/acp-builtins";
 import {
 	BUILTIN_SLASH_COMMAND_DEFS,
@@ -12,6 +17,158 @@ import type {
 	TuiSlashCommandRuntime,
 } from "../src/slash-commands/types";
 
+type AcpPromptFixture = {
+	agent: AcpAgent;
+	sessionId: string;
+	updates: SessionNotification[];
+	controlOperations: string[];
+	promptTexts: string[];
+	dispose: () => void;
+};
+
+async function createAcpPromptFixture(): Promise<AcpPromptFixture> {
+	const tempDir = TempDir.createSync("@acp-import-policy-");
+	const agentDir = path.join(tempDir.path(), "agent");
+	const cwd = path.join(tempDir.path(), "workspace");
+	const token = "acp-import-policy-token";
+	const sessionId = "acp-import-policy-session";
+	const updates: SessionNotification[] = [];
+	const promptTexts: string[] = [];
+	const controlOperations: string[] = [];
+	let turnNumber = 0;
+	let server!: ReturnType<typeof Bun.serve>;
+
+	server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request, server) {
+			if (new URL(request.url).searchParams.get("token") !== token)
+				return new Response("Unauthorized", { status: 401 });
+			if (!server.upgrade(request, { data: undefined })) return new Response("Upgrade failed", { status: 400 });
+		},
+		websocket: {
+			open(socket) {
+				socket.send(JSON.stringify({ type: "hello", connectionId: "acp-import-policy" }));
+			},
+			message(socket, raw) {
+				const frame = JSON.parse(String(raw)) as Record<string, unknown>;
+				if (frame.type === "register_provider") {
+					socket.send(
+						JSON.stringify({ type: "register_provider_result", id: frame.id, ok: true, leaseId: "lease" }),
+					);
+					return;
+				}
+				if (frame.type === "broker_request") {
+					const result =
+						frame.operation === "session.create"
+							? { sessionId, endpoint: { url: `ws://127.0.0.1:${server.port}`, token } }
+							: {};
+					socket.send(JSON.stringify({ type: "broker_response", id: frame.id, ok: true, result }));
+					return;
+				}
+				if (frame.type === "query_request") {
+					const query = String(frame.query);
+					const items =
+						query === "config.list/get"
+							? [{ mode: "default", model: "openai/gpt", thinking: "medium" }]
+							: query === "models.list/current"
+								? [{ provider: "openai", id: "gpt", name: "GPT" }]
+								: query === "providers.list/active"
+									? [{ providerId: "openai", connectionKind: "credential" }]
+									: [];
+					const result =
+						query === "runtime.capabilities"
+							? { promptTerminalOutcomeVersion: 1 }
+							: query === "context.get"
+								? { usage: { tokens: 0, contextWindow: 200_000, percent: 0, source: "test" } }
+								: query === "session.metadata"
+									? { page: { items: [{ sessionId, name: "ACP import policy", cwd }], complete: true } }
+									: { page: { items, complete: true } };
+					socket.send(JSON.stringify({ type: "query_response", id: frame.id, ok: true, result }));
+					return;
+				}
+				if (frame.type !== "control_request") return;
+				const operation = String(frame.operation);
+				if (operation === "turn.prompt") {
+					const input = frame.input;
+					if (input && typeof input === "object" && !Array.isArray(input)) {
+						const text = (input as { text?: unknown }).text;
+						if (typeof text === "string") promptTexts.push(text);
+					}
+				}
+
+				controlOperations.push(operation);
+				const commandId = `prompt-command-${++turnNumber}`;
+				const turnId = `prompt-turn-${turnNumber}`;
+				socket.send(
+					JSON.stringify({
+						type: "control_response",
+						id: frame.id,
+						ok: true,
+						result:
+							operation === "turn.prompt"
+								? { commandId, turnId, accepted: true }
+								: operation === "turn.abort"
+									? { aborted: true }
+									: {},
+					}),
+				);
+				if (operation === "turn.prompt") {
+					setTimeout(() => {
+						socket.send(JSON.stringify({ type: "agent_start", sessionId, commandId, turnId }));
+						socket.send(
+							JSON.stringify({
+								type: "agent_end",
+								sessionId,
+								commandId,
+								turnId,
+								finalText: "fixture response",
+								outcome: { kind: "stopped", reason: "end_turn", provenance: "agent" },
+							}),
+						);
+					}, 0);
+				}
+			},
+		},
+	});
+	if (server.port === undefined) throw new Error("Expected ACP import-policy fixture server port");
+	await writeBrokerDiscovery(agentDir, {
+		version: 1,
+		protocolVersion: 3,
+		packageGeneration: "test",
+		ownerId: "test-owner",
+		pid: process.pid,
+		host: "127.0.0.1",
+		port: server.port,
+		url: `ws://127.0.0.1:${server.port}`,
+		token,
+		startedAt: Date.now(),
+		heartbeatAt: Date.now(),
+	});
+	const abort = new AbortController();
+	const agent = new AcpAgent(
+		{
+			sessionUpdate: async (update: SessionNotification) => updates.push(update),
+			signal: abort.signal,
+			closed: Promise.withResolvers<void>().promise,
+		} as unknown as AgentSideConnection,
+		{ agentDir },
+	);
+	const created = await agent.newSession({ cwd, mcpServers: [] });
+	return {
+		agent,
+		sessionId: created.sessionId,
+		updates,
+		promptTexts,
+		controlOperations,
+		dispose: () => {
+			abort.abort();
+			server.stop(true);
+			tempDir.removeSync();
+		},
+	};
+}
+
 describe("session import command transport policy", () => {
 	it("is never advertised or dispatched over ACP", async () => {
 		expect(ACP_BUILTIN_SLASH_COMMANDS.some(command => command.name === "import-session")).toBe(false);
@@ -24,6 +181,47 @@ describe("session import command transport policy", () => {
 			availableLocally ? { consumed: true } : false,
 		);
 		expect(output).toEqual(availableLocally ? ["Slash command /import-session is unavailable over ACP."] : []);
+	});
+
+	it.skipIf(process.platform !== "linux")("intercepts disabled builtins at the ACP turn.prompt ingress", async () => {
+		const fixture = await createAcpPromptFixture();
+		try {
+			const result = await fixture.agent.prompt({
+				sessionId: fixture.sessionId,
+				prompt: [{ type: "text", text: "/import-session codex" }],
+			});
+			expect(result).toEqual({ stopReason: "end_turn" });
+			expect(fixture.controlOperations).not.toContain("turn.prompt");
+			expect(fixture.updates).toContainEqual(
+				expect.objectContaining({
+					sessionId: fixture.sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						content: { type: "text", text: "Slash command /import-session is unavailable over ACP." },
+					},
+				}),
+			);
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	it.skipIf(process.platform !== "linux")("forwards unknown slash input and normal prompts through ACP", async () => {
+		const fixture = await createAcpPromptFixture();
+		try {
+			await fixture.agent.prompt({
+				sessionId: fixture.sessionId,
+				prompt: [{ type: "text", text: "/unknown-command" }],
+			});
+			await fixture.agent.prompt({
+				sessionId: fixture.sessionId,
+				prompt: [{ type: "text", text: "normal prompt" }],
+			});
+			expect(fixture.promptTexts).toEqual(["/unknown-command", "normal prompt"]);
+			expect(fixture.controlOperations.filter(operation => operation === "turn.prompt")).toHaveLength(2);
+		} finally {
+			fixture.dispose();
+		}
 	});
 
 	it("advertises and dispatches only where retained-descriptor authority is available", async () => {

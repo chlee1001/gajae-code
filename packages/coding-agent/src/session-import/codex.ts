@@ -298,13 +298,20 @@ function parseSessionMeta(file: string, buffer: Buffer): CodexSessionSource | nu
 	} catch {
 		throw new CodexImportError("malformed_source", "discovery", "Codex session metadata was malformed.");
 	}
-	if (!first || typeof first !== "object" || Array.isArray(first)) return null;
+	if (first === null || Array.isArray(first))
+		throw new CodexImportError("malformed_source", "discovery", "Codex session metadata was malformed.");
+	if (typeof first !== "object") return null;
 	const record = first as Record<string, unknown>;
-	if (record.type !== "session_meta" || !record.payload || typeof record.payload !== "object") return null;
+	if (record.type !== "session_meta") return null;
+	if (!record.payload || typeof record.payload !== "object" || Array.isArray(record.payload))
+		throw new CodexImportError("malformed_source", "discovery", "Codex session metadata was malformed.");
 	const payload = record.payload as Record<string, unknown>;
-	const id = String(payload.id ?? payload.session_id ?? "");
-	const cwd = String(payload.cwd ?? "");
-	if (!CODEX_SESSION_ID.test(id) || !cwd) return null;
+	const idValue = payload.id ?? payload.session_id;
+	const cwdValue = payload.cwd;
+	if (typeof idValue !== "string" || !CODEX_SESSION_ID.test(idValue) || typeof cwdValue !== "string" || !cwdValue)
+		throw new CodexImportError("malformed_source", "discovery", "Codex session metadata was malformed.");
+	const id = idValue;
+	const cwd = cwdValue;
 	return {
 		id,
 		path: file,

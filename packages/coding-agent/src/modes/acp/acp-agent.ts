@@ -52,6 +52,7 @@ import { readSdkBrokerDiscovery, SdkClient, SdkClientError } from "../../sdk/cli
 import { SYNTHETIC_PROVIDER_ID } from "../../sdk/model-profile-namespace";
 import type { SdkPromptTerminalOutcome } from "../../sdk/prompt-status";
 import { PromptActivity, type PromptWatchdogClock, systemPromptWatchdogClock } from "../../sdk/prompt-watchdog";
+import { type AcpBuiltinCommandRuntime, executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import {
 	buildToolCallStartUpdate,
 	mapAgentSessionEventToAcpSessionUpdates,
@@ -1392,6 +1393,25 @@ export class AcpAgent implements Agent {
 		// A new turn starts uncancelled; a stale flag must never settle it as `cancelled`.
 		record.cancelRequested = false;
 		const payload = acpPromptPayload(params.prompt);
+		const builtinResult = await executeAcpBuiltinSlashCommand(
+			payload.text,
+			{
+				output: async (text: string) =>
+					await this.#publishSessionUpdate(
+						params.sessionId,
+						{
+							sessionId: params.sessionId,
+							update: {
+								sessionUpdate: "agent_message_chunk",
+								content: { type: "text", text },
+							},
+						},
+						record.adapter,
+					),
+			} as unknown as AcpBuiltinCommandRuntime,
+			{ disabledOnly: true },
+		);
+		if (builtinResult !== false) return { stopReason: "end_turn" };
 		// The SDK transport hard-caps a single request frame at 256 KiB and answers an
 		// oversize frame by closing the socket (CloseCode::Size, crates/gjc-sdk/src/server.rs),
 		// which surfaces to the client as an opaque `connection_closed` mid-turn. Reject

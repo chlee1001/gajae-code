@@ -258,6 +258,48 @@ describe("Codex session import", () => {
 			});
 		}
 	});
+	it("classifies invalid candidate metadata consistently in retained and pathname discovery", async () => {
+		const directory = path.join(codexHome, "sessions", "2026");
+		await fs.mkdir(directory, { recursive: true });
+		const candidates: Array<{ name: string; record: unknown }> = [
+			{ name: "null", record: null },
+			{ name: "array", record: [] },
+			{ name: "payload-null", record: { type: "session_meta", payload: null } },
+			{ name: "payload-array", record: { type: "session_meta", payload: [] } },
+			{ name: "payload-string", record: { type: "session_meta", payload: "invalid" } },
+			{ name: "missing-fields", record: { type: "session_meta", payload: {} } },
+			{ name: "invalid-id", record: { type: "session_meta", payload: { id: "bad/id", cwd: workspace } } },
+			{ name: "wrong-id-type", record: { type: "session_meta", payload: { id: 42, cwd: workspace } } },
+			{ name: "missing-cwd", record: { type: "session_meta", payload: { id: "valid-id" } } },
+			{ name: "wrong-cwd-type", record: { type: "session_meta", payload: { id: "valid-id", cwd: 42 } } },
+			{ name: "empty-cwd", record: { type: "session_meta", payload: { id: "valid-id", cwd: "" } } },
+		];
+		for (const candidate of candidates) {
+			const file = path.join(directory, `invalid-${candidate.name}.jsonl`);
+			await fs.writeFile(file, line(candidate.record), { mode: 0o600 });
+			try {
+				for (const retainSourceAuthority of [false, true]) {
+					await expect(
+						discoverCodexSessions(workspace, [], codexHome, retainSourceAuthority),
+					).rejects.toMatchObject({ code: "malformed_source", phase: "discovery" });
+				}
+			} finally {
+				await fs.rm(file, { force: true });
+			}
+		}
+	});
+	it("skips unrelated JSONL records during discovery", async () => {
+		const directory = path.join(codexHome, "sessions", "2026");
+		await fs.mkdir(directory, { recursive: true });
+		await fs.writeFile(
+			path.join(directory, "unrelated.jsonl"),
+			line({ type: "event_msg", payload: { message: "not session metadata" } }),
+			{ mode: 0o600 },
+		);
+		for (const retainSourceAuthority of [false, true]) {
+			expect(await discoverCodexSessions(workspace, [], codexHome, retainSourceAuthority)).toEqual([]);
+		}
+	});
 	it("classifies non-object JSONL records as malformed source", async () => {
 		await source("null-record", workspace, ["null\n"]);
 		const batch = await importCodexSessions(workspace, ["null-record"]);
@@ -467,6 +509,88 @@ describe("Codex session import", () => {
 			results: [{ status: "failed", code: "internal_failed", phase: "internal" }],
 		});
 		expect((await fs.lstat(stagingRoot)).isFile()).toBe(true);
+	});
+	it("preserves staging when a recovery receipt is not a regular file", async () => {
+		await source("receipt-path-setup", workspace, [message("assistant", "receipt setup")]);
+		const first = await importCodexSessions(workspace, ["receipt-path-setup"]);
+		const setup = first.results[0];
+		if (!setup || setup.status === "failed") throw new Error("Expected receipt setup import success");
+		await fs.rm(setup.targetPath);
+		const recoveryDirectory = path.join(
+			path.dirname(setup.targetPath),
+			".gjc-managed-session-internal",
+			"import-staging",
+			"receipt-path-uncertain",
+		);
+		const receiptPath = path.join(recoveryDirectory, "artifact-recovery.json");
+		await fs.mkdir(receiptPath, { recursive: true });
+		const managedDirectory = path.dirname(setup.targetPath);
+		const before = (await fs.readdir(managedDirectory)).sort();
+
+		await source("receipt-path-blocked", workspace, [message("assistant", "receipt blocked")]);
+		expect(await importCodexSessions(workspace, ["receipt-path-blocked"])).toMatchObject({
+			status: "failed",
+			results: [{ status: "failed", code: "publish_uncertain", phase: "internal", retryable: true }],
+		});
+		expect((await fs.lstat(receiptPath)).isDirectory()).toBe(true);
+		expect((await fs.readdir(managedDirectory)).sort()).toEqual(before);
+	});
+	it("preserves staging when a bound transcript path is not a regular file", async () => {
+		await source("transcript-path-setup", workspace, [message("assistant", "transcript setup")]);
+		const first = await importCodexSessions(workspace, ["transcript-path-setup"]);
+		const setup = first.results[0];
+		if (!setup || setup.status === "failed") throw new Error("Expected transcript setup import success");
+		const artifactDirectory = setup.targetPath.slice(0, -6);
+		const manifest = JSON.parse(
+			await fs.readFile(path.join(artifactDirectory, "codex-import-manifest.json"), "utf8"),
+		) as {
+			provenance: Record<string, unknown> & {
+				providerId: string;
+				sourceSessionId: string;
+				sourceSha256: string;
+				converterVersion: number;
+				sanitizerVersion: number;
+				mappingVersion: number;
+			};
+		};
+		const provenance = manifest.provenance;
+		const importKey = [
+			provenance.providerId,
+			provenance.sourceSessionId,
+			provenance.sourceSha256,
+			provenance.converterVersion,
+			provenance.sanitizerVersion,
+			provenance.mappingVersion,
+		].join(":");
+		await fs.rm(setup.targetPath);
+		const recoveryDirectory = path.join(
+			path.dirname(setup.targetPath),
+			".gjc-managed-session-internal",
+			"import-staging",
+			"transcript-path-uncertain",
+		);
+		await fs.mkdir(recoveryDirectory, { recursive: true });
+		await fs.writeFile(
+			path.join(recoveryDirectory, "artifact-recovery.json"),
+			`${JSON.stringify({
+				schemaVersion: 1,
+				artifactDirectory: path.basename(artifactDirectory),
+				importKey,
+				targetSessionId: setup.targetSessionId,
+			})}\n`,
+		);
+		await fs.mkdir(setup.targetPath);
+		const managedDirectory = path.dirname(setup.targetPath);
+		const before = (await fs.readdir(managedDirectory)).sort();
+
+		await source("transcript-path-blocked", workspace, [message("assistant", "transcript blocked")]);
+		expect(await importCodexSessions(workspace, ["transcript-path-blocked"])).toMatchObject({
+			status: "failed",
+			results: [{ status: "failed", code: "publish_uncertain", phase: "internal", retryable: true }],
+		});
+		expect((await fs.lstat(setup.targetPath)).isDirectory()).toBe(true);
+		expect((await fs.lstat(recoveryDirectory)).isDirectory()).toBe(true);
+		expect((await fs.readdir(managedDirectory)).sort()).toEqual(before);
 	});
 	it("recovers only receipt-bound committed artifacts and preserves unbound directories", async () => {
 		await source("staging-orphan", workspace, [message("assistant", "recover staging")]);
