@@ -92,6 +92,9 @@ describe("Codex session import", () => {
 	it("redacts header-style credentials while preserving header context", () => {
 		const input = [
 			"Authorization: Basic dXNlcjpwYXNz",
+			"Authorization: Bearer x",
+			"Authorization: Digest opaque-secret",
+			"Authorization: opaque-secret",
 			"Cookie: session=session-cookie-secret; theme=dark",
 			"Set-Cookie: sid=set-cookie-secret; Path=/; HttpOnly",
 			"X-Request-Id: request-id-kept",
@@ -101,12 +104,17 @@ describe("Codex session import", () => {
 		expect(sanitized.value).not.toContain("dXNlcjpwYXNz");
 		expect(sanitized.value).not.toContain("session-cookie-secret");
 		expect(sanitized.value).not.toContain("set-cookie-secret");
+		expect(sanitized.value).not.toContain("x\n");
+		expect(sanitized.value).not.toContain("opaque-secret");
 		expect(sanitized.value).toContain("Authorization: Basic [redacted-credentials]");
+		expect(sanitized.value).toContain("Authorization: Bearer [redacted-credentials]");
+		expect(sanitized.value).toContain("Authorization: Digest [redacted-credentials]");
+		expect(sanitized.value).toContain("Authorization: [redacted-credentials]");
 		expect(sanitized.value).toContain("Cookie: session=[redacted-credentials]; theme=[redacted-credentials]");
 		expect(sanitized.value).toContain("Set-Cookie: sid=[redacted-credentials]; Path=/; HttpOnly");
 		expect(sanitized.value).toContain("X-Request-Id: request-id-kept");
 		expect(sanitized.value).toContain("ordinary text remains usable");
-		expect(sanitized.redacted).toBe(4);
+		expect(sanitized.redacted).toBe(7);
 	});
 
 	it("keeps header labels and ordinary text when no credential value is present", () => {

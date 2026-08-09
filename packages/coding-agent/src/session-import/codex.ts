@@ -33,7 +33,6 @@ const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{1,65536}?-----END 
 const URL_CREDENTIAL = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu;
 const HEADER_CREDENTIAL = /(\b(authorization|cookie|set-cookie)\b[ \t]*:[ \t]*)([^\r\n]*)/giu;
 
-const BASIC_AUTH_VALUE = /^(basic[ \t]+)(\S+)/iu;
 const COOKIE_PAIR = /(^|[;,][ \t]*)([^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;,\s]*))/gu;
 const SET_COOKIE_PAIR = /^([ \t]*[^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;\r\n]*))/u;
 const REDACTED_CREDENTIAL = "[redacted-credentials]";
@@ -122,10 +121,11 @@ export function sanitizeImportedString(value: string): { value: string; redacted
 			(_match: string, prefix: string, headerName: string, raw: string): string => {
 				const normalizedHeaderName = headerName.toLowerCase();
 				if (normalizedHeaderName === "authorization") {
-					return `${prefix}${raw.replace(BASIC_AUTH_VALUE, (_basicMatch: string, scheme: string): string => {
-						redacted++;
-						return `${scheme}${REDACTED_CREDENTIAL}`;
-					})}`;
+					const authorization = raw.trim();
+					if (!authorization || authorization.toLowerCase() === "basic") return `${prefix}${raw}`;
+					const scheme = /^([A-Za-z][A-Za-z0-9_-]{0,63})[ \t]+/u.exec(raw)?.[1];
+					redacted++;
+					return `${prefix}${scheme ? `${scheme} ${REDACTED_CREDENTIAL}` : REDACTED_CREDENTIAL}`;
 				}
 				if (normalizedHeaderName === "set-cookie") {
 					return `${prefix}${raw.replace(
