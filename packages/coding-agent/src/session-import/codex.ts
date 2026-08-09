@@ -34,10 +34,8 @@ const URL_CREDENTIAL = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu;
 const HEADER_CREDENTIAL = /(\b(authorization|cookie|set-cookie)\b[ \t]*:[ \t]*)([^\r\n]*)/giu;
 
 const BASIC_AUTH_VALUE = /^(basic[ \t]+)(\S+)/iu;
-const COOKIE_PAIR =
-	/(^|[;,][ \t]*)([^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;,\s]*))/gu;
-const SET_COOKIE_PAIR =
-	/^([ \t]*[^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;\r\n]*))/u;
+const COOKIE_PAIR = /(^|[;,][ \t]*)([^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;,\s]*))/gu;
+const SET_COOKIE_PAIR = /^([ \t]*[^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;\r\n]*))/u;
 const REDACTED_CREDENTIAL = "[redacted-credentials]";
 
 const ANSI_ESCAPE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/gu;
@@ -121,21 +119,13 @@ export function sanitizeImportedString(value: string): { value: string; redacted
 	if (next.search(HEADER_CREDENTIAL) >= 0) {
 		next = next.replace(
 			HEADER_CREDENTIAL,
-			(
-				_match: string,
-				prefix: string,
-				headerName: string,
-				raw: string,
-			): string => {
+			(_match: string, prefix: string, headerName: string, raw: string): string => {
 				const normalizedHeaderName = headerName.toLowerCase();
 				if (normalizedHeaderName === "authorization") {
-					return `${prefix}${raw.replace(
-						BASIC_AUTH_VALUE,
-						(_basicMatch: string, scheme: string): string => {
-							redacted++;
-							return `${scheme}${REDACTED_CREDENTIAL}`;
-						},
-					)}`;
+					return `${prefix}${raw.replace(BASIC_AUTH_VALUE, (_basicMatch: string, scheme: string): string => {
+						redacted++;
+						return `${scheme}${REDACTED_CREDENTIAL}`;
+					})}`;
 				}
 				if (normalizedHeaderName === "set-cookie") {
 					return `${prefix}${raw.replace(

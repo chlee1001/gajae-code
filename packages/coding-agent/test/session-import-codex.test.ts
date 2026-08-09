@@ -442,11 +442,7 @@ describe("Codex session import", () => {
 		const first = await importCodexSessions(workspace, ["staging-root-setup"]);
 		const setup = first.results[0];
 		if (!setup || setup.status === "failed") throw new Error("Expected staging setup import success");
-		const stagingRoot = path.join(
-			path.dirname(setup.targetPath),
-			".gjc-managed-session-internal",
-			"import-staging",
-		);
+		const stagingRoot = path.join(path.dirname(setup.targetPath), ".gjc-managed-session-internal", "import-staging");
 
 		await fs.rm(stagingRoot, { recursive: true });
 		await source("missing-staging-root", workspace, [message("assistant", "missing root is first-run safe")]);
