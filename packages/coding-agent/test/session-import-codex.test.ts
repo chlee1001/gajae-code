@@ -14,10 +14,7 @@ import {
 	sanitizeImportedValue,
 } from "../src/session-import/codex";
 import { importCodexSessions } from "../src/session-import/service";
-import {
-	executeBuiltinSlashCommand,
-	executeLocalHeadlessBuiltinSlashCommand,
-} from "../src/slash-commands/builtin-registry";
+import { executeLocalHeadlessBuiltinSlashCommand } from "../src/slash-commands/builtin-registry";
 import type { SlashCommandRuntime } from "../src/slash-commands/types";
 
 const originalAgentDir = getAgentDir();
@@ -755,7 +752,7 @@ describe("Codex session import", () => {
 			spy.mockRestore();
 		}
 	});
-	it("imports an exact 70,002,143-byte source through checkpoint, restart, continuation, and retry", async () => {
+	it("rejects a converted transcript that cannot be resumed within the context budget", async () => {
 		const exactBytes = 70_002_143;
 		const id = "large";
 		const dir = path.join(codexHome, "sessions", "2026");
@@ -773,73 +770,15 @@ describe("Codex session import", () => {
 			}
 			const emptyBytes = Buffer.byteLength(message("assistant", ""));
 			const remaining = exactBytes - written;
-			const final = Buffer.from(message("assistant", "y".repeat(remaining - emptyBytes)));
-			expect(final.byteLength).toBe(remaining);
-			await handle.write(final);
+			await handle.write(Buffer.from(message("assistant", "y".repeat(remaining - emptyBytes))));
 			await handle.sync();
 		} finally {
 			await handle.close();
 		}
 		expect((await fs.stat(file)).size).toBe(exactBytes);
-		const batch = await importCodexSessions(workspace, [id]);
-		if (batch.status !== "success") throw new Error(JSON.stringify(batch));
-		expect(batch.status).toBe("success");
-		const result = batch.results[0];
-		if (!result || result.status === "failed") throw new Error("Expected large import success");
-		expect(result.transcriptBytes).toBeGreaterThan(64 * 1024 * 1024);
-		let resumePromise: ReturnType<typeof SessionManager.openExistingStrict> | undefined;
-		expect(
-			await executeBuiltinSlashCommand("/resume", {
-				ctx: {
-					showSessionSelector: () => {
-						resumePromise = (async () => {
-							const inspection = await SessionManager.inspectSessionTailReadOnly(result.targetPath);
-							if (inspection.kind === "error") throw new Error(inspection.reason);
-							return SessionManager.openExistingStrict(inspection.identity, path.dirname(result.targetPath));
-						})();
-					},
-					editor: { setText: () => undefined },
-				},
-				handleBackgroundCommand: () => undefined,
-			} as unknown as Parameters<typeof executeBuiltinSlashCommand>[1]),
-		).toBe(true);
-		if (!resumePromise) throw new Error("/resume did not open the session selector");
-		const opened = await resumePromise;
-		if (opened.kind === "error") throw new Error(opened.reason);
-		const lease = opened.manager.acquireMemoryGuardParticipantIngressLease();
-		try {
-			const checkpoint = await opened.manager.createMemoryGuardCheckpoint({
-				ingressLease: lease,
-				checkpointRoot: path.join(root, "checkpoint"),
-			});
-			expect(Number(checkpoint.transcript.bytes)).toBeGreaterThan(64 * 1024 * 1024);
-		} finally {
-			lease.release();
-		}
-		opened.manager.appendMessage({ role: "user", content: "large continuation", timestamp: 2 });
-		await opened.manager.close();
-		const restarted = await SessionManager.inspectSessionTailReadOnly(result.targetPath);
-		if (restarted.kind === "error") throw new Error(restarted.reason);
-		const reopened = await SessionManager.openExistingStrict(restarted.identity, path.dirname(result.targetPath));
-		if (reopened.kind === "error") throw new Error(reopened.reason);
-		expect(reopened.manager.buildSessionContext().messages.at(-1)).toMatchObject({
-			role: "user",
-			content: "large continuation",
+		expect(await importCodexSessions(workspace, [id])).toMatchObject({
+			status: "failed",
+			results: [{ code: "content_too_large", phase: "source_event" }],
 		});
-		await reopened.manager.close();
-		const retry = await importCodexSessions(workspace, [id]);
-		expect(retry.status).toBe("existing");
-		const finalInspection = await SessionManager.inspectSessionTailReadOnly(result.targetPath);
-		if (finalInspection.kind === "error") throw new Error(finalInspection.reason);
-		const finalReopen = await SessionManager.openExistingStrict(
-			finalInspection.identity,
-			path.dirname(result.targetPath),
-		);
-		if (finalReopen.kind === "error") throw new Error(finalReopen.reason);
-		expect(finalReopen.manager.buildSessionContext().messages.at(-1)).toMatchObject({
-			role: "user",
-			content: "large continuation",
-		});
-		await finalReopen.manager.close();
-	}, 300_000);
+	});
 });

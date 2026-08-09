@@ -1024,6 +1024,15 @@ async function stageConversion(
 	}
 	if (finalWriter.bytes !== provenance.transcriptBytes) throw new Error("validation_failed");
 	await validateExactV5(finalPath, targetSessionId, finalWriter.bytes);
+	const inspection = await SessionManager.inspectSessionTailReadOnly(finalPath);
+	if (inspection.kind === "error" && inspection.reason === "context_too_large")
+		throw new CodexImportError(
+			"content_too_large",
+			"source_event",
+			"Converted GJC transcript exceeds the resumable context limit.",
+			TARGET_TRANSCRIPT_MAX_BYTES,
+			finalWriter.bytes,
+		);
 	return {
 		conversion,
 		transcript: {
