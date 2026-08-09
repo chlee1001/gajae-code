@@ -1910,12 +1910,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Exit the application",
 		handleTui: shutdownHandlerTui,
 	},
-].filter(command => command.name !== "import-session" || IMPORT_SESSION_RETAINED_DESCRIPTOR_AUTHORITY_AVAILABLE);
+];
 
 const QUARANTINED_UTILITY_SLASH_COMMANDS = new Set(["agents"]);
 
 const ACTIVE_BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY.filter(
-	command => !QUARANTINED_UTILITY_SLASH_COMMANDS.has(command.name),
+	command =>
+		!QUARANTINED_UTILITY_SLASH_COMMANDS.has(command.name) &&
+		(command.name !== "import-session" || IMPORT_SESSION_RETAINED_DESCRIPTOR_AUTHORITY_AVAILABLE),
 );
 
 const BUILTIN_SLASH_COMMAND_LOOKUP = new Map<string, SlashCommandSpec>();

@@ -943,7 +943,7 @@ async function publishSource(source: CodexConversion["source"]): Promise<Session
 	const resolved = resolveManagedScopeForWrite({ cwd: source.cwd, agentDir, sessionsRoot });
 	if (resolved.kind === "error") {
 		const cause = resolved.cause?.classification;
-		if (resolved.code === "artifact_capacity_exceeded" || cause === "artifact_capacity_exceeded")
+		if (resolved.code === "capacity_exceeded" || cause === "artifact_capacity_exceeded")
 			throw new CodexImportError(
 				"content_too_large",
 				"quarantine",
@@ -955,7 +955,7 @@ async function publishSource(source: CodexConversion["source"]): Promise<Session
 	const prepared = prepareManagedSessionScopeForWriteSync(resolved.scope);
 	if (prepared.kind === "error") {
 		const cause = prepared.cause?.classification;
-		if (prepared.code === "artifact_capacity_exceeded" || cause === "artifact_capacity_exceeded")
+		if (prepared.code === "capacity_exceeded" || cause === "artifact_capacity_exceeded")
 			throw new CodexImportError(
 				"content_too_large",
 				"quarantine",

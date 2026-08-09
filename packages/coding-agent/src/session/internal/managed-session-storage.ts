@@ -1448,7 +1448,7 @@ export class ManagedSessionDescendantStore {
 					sourceIdentity.ctimeNs.toString(),
 					expected.sha256,
 				)
-			: renameNoReplacePath(source, destination);
+			: nativeSessionStorage().renameNoReplacePath(source, destination);
 		const outcome = classifyNativePublishOutcome(published, this.#authority ? "retained_file" : "direct_rename");
 		if (!outcome.ok) throw publishFailure(outcome);
 		if (!this.#authority) fsyncDirectory(this.#baseDir);
