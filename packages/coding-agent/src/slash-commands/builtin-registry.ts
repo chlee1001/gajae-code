@@ -594,6 +594,8 @@ const shutdownHandlerTui = (_command: ParsedSlashCommand, runtime: TuiSlashComma
 	return commandConsumed();
 };
 
+const IMPORT_SESSION_RETAINED_DESCRIPTOR_AUTHORITY_AVAILABLE = process.platform === "linux";
+
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "import-session",
@@ -1908,7 +1910,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Exit the application",
 		handleTui: shutdownHandlerTui,
 	},
-];
+].filter(command => command.name !== "import-session" || IMPORT_SESSION_RETAINED_DESCRIPTOR_AUTHORITY_AVAILABLE);
 
 const QUARANTINED_UTILITY_SLASH_COMMANDS = new Set(["agents"]);
 

@@ -12,7 +12,7 @@ import {
 
 export const CODEX_PROVIDER_ID = "openai-codex";
 export const CODEX_CONVERTER_VERSION = 1;
-export const CODEX_SANITIZER_VERSION = 1;
+export const CODEX_SANITIZER_VERSION = 2;
 export const CODEX_MAPPING_VERSION = 3;
 
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024 * 1024;
@@ -31,6 +31,15 @@ const SECRET_ASSIGNMENT =
 	/(\b(?:password|passwd|secret|token|api[-_]?key|access[-_]?key)\b\s*[:=]\s*)(?:"[^"\r\n]{4,4096}"|'[^'\r\n]{4,4096}'|[^\s,;]{4,4096})/giu;
 const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{1,65536}?-----END [A-Z ]*PRIVATE KEY-----/gu;
 const URL_CREDENTIAL = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu;
+const HEADER_CREDENTIAL = /(\b(authorization|cookie|set-cookie)\b[ \t]*:[ \t]*)([^\r\n]*)/giu;
+
+const BASIC_AUTH_VALUE = /^(basic[ \t]+)(\S+)/iu;
+const COOKIE_PAIR =
+	/(^|[;,][ \t]*)([^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;,\s]*))/gu;
+const SET_COOKIE_PAIR =
+	/^([ \t]*[^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;\r\n]*))/u;
+const REDACTED_CREDENTIAL = "[redacted-credentials]";
+
 const ANSI_ESCAPE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/gu;
 const RESERVED_CONTROL = /<\|[^|\r\n]{1,128}\|>/gu;
 const HOSTILE_UNICODE = /[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/gu;
@@ -109,6 +118,63 @@ export function sanitizeImportedString(value: string): { value: string; redacted
 	if (next.search(HOSTILE_UNICODE) >= 0) next = replace(next, HOSTILE_UNICODE, "[unicode-control]");
 	if (next.search(C0_C1) >= 0) next = replace(next, C0_C1, "[control-character]");
 	if (next.includes("<|")) next = replace(next, RESERVED_CONTROL, "[provider-control]");
+	if (next.search(HEADER_CREDENTIAL) >= 0) {
+		next = next.replace(
+			HEADER_CREDENTIAL,
+			(
+				_match: string,
+				prefix: string,
+				headerName: string,
+				raw: string,
+			): string => {
+				const normalizedHeaderName = headerName.toLowerCase();
+				if (normalizedHeaderName === "authorization") {
+					return `${prefix}${raw.replace(
+						BASIC_AUTH_VALUE,
+						(_basicMatch: string, scheme: string): string => {
+							redacted++;
+							return `${scheme}${REDACTED_CREDENTIAL}`;
+						},
+					)}`;
+				}
+				if (normalizedHeaderName === "set-cookie") {
+					return `${prefix}${raw.replace(
+						SET_COOKIE_PAIR,
+						(
+							_cookieMatch: string,
+							name: string,
+							equals: string,
+							quotedValue: string | undefined,
+							unquotedValue: string | undefined,
+						): string => {
+							const secret = quotedValue ?? unquotedValue ?? "";
+							if (!secret) return _cookieMatch;
+							redacted++;
+							const quote = quotedValue === undefined ? "" : '"';
+							return `${name}${equals}${quote}${REDACTED_CREDENTIAL}${quote}`;
+						},
+					)`}`;
+				}
+				return `${prefix}${raw.replace(
+					COOKIE_PAIR,
+					(
+						_cookieMatch: string,
+						lead: string,
+						name: string,
+						equals: string,
+						quotedValue: string | undefined,
+						unquotedValue: string | undefined,
+					): string => {
+						const secret = quotedValue ?? unquotedValue ?? "";
+						if (!secret) return _cookieMatch;
+						redacted++;
+						const quote = quotedValue === undefined ? "" : '"';
+						return `${lead}${name}${equals}${quote}${REDACTED_CREDENTIAL}${quote}`;
+					},
+				)}`;
+			},
+		);
+	}
 	if (/(?:Bearer\s|(?:sk[-_]|ghp_|github_pat_)|AKIA[A-Z0-9]{16})/iu.test(next))
 		next = replace(next, SECRET_VALUE, "[redacted-secret]");
 	if (next.includes(".")) next = replace(next, JWT_VALUE, "[redacted-secret]");

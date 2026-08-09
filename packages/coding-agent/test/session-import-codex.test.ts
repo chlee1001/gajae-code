@@ -87,6 +87,30 @@ describe("Codex session import", () => {
 		).toEqual({ authorization: "[redacted-field]", nested: { api_key: "[redacted-field]", safe: "ok" } });
 	});
 
+	it("redacts header-style credentials while preserving header context", () => {
+		const input = [
+			"Authorization: Basic dXNlcjpwYXNz",
+			"Cookie: session=session-cookie-secret; theme=dark",
+			"Set-Cookie: sid=set-cookie-secret; Path=/; HttpOnly",
+			"X-Request-Id: request-id-kept",
+			"ordinary text remains usable",
+		].join("\n");
+		const sanitized = sanitizeImportedString(input);
+		expect(sanitized.value).not.toContain("dXNlcjpwYXNz");
+		expect(sanitized.value).not.toContain("session-cookie-secret");
+		expect(sanitized.value).not.toContain("set-cookie-secret");
+		expect(sanitized.value).toContain("Authorization: Basic [redacted-credentials]");
+		expect(sanitized.value).toContain("Cookie: session=[redacted-credentials]; theme=[redacted-credentials]");
+		expect(sanitized.value).toContain("Set-Cookie: sid=[redacted-credentials]; Path=/; HttpOnly");
+		expect(sanitized.value).toContain("X-Request-Id: request-id-kept");
+		expect(sanitized.value).toContain("ordinary text remains usable");
+		expect(sanitized.redacted).toBe(4);
+	});
+
+	it("keeps header labels and ordinary text when no credential value is present", () => {
+		const input = "Authorization: Basic\nCookie: notes\nSet-Cookie: example\nHeader: keep-this";
+		expect(sanitizeImportedString(input)).toEqual({ value: input, redacted: 0 });
+	});
 	it("returns a failing local-headless status when import discovery fails", async () => {
 		const output: string[] = [];
 		const result = await executeLocalHeadlessBuiltinSlashCommand("/import-session codex missing-id", {
