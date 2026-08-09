@@ -12,6 +12,7 @@ import {
 
 export const CODEX_PROVIDER_ID = "openai-codex";
 export const CODEX_CONVERTER_VERSION = 1;
+export const CODEX_IMPORT_BATCH_LIMIT = 256;
 export const CODEX_SANITIZER_VERSION = 2;
 export const CODEX_MAPPING_VERSION = 3;
 
@@ -562,6 +563,13 @@ export async function discoverCodexSessions(
 	codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"),
 	retainSourceAuthority = false,
 ): Promise<CodexSessionSource[]> {
+	const requested = new Set(requestedIds);
+	if (requested.size > CODEX_IMPORT_BATCH_LIMIT)
+		throw new CodexImportError(
+			"content_too_large",
+			"discovery",
+			`Codex session import batch exceeds the maximum of ${CODEX_IMPORT_BATCH_LIMIT} sessions.`,
+		);
 	const sessionsRoot = path.join(codexHome, "sessions");
 	let rootAuthority: RecoveryFsRoot | undefined;
 	let retainedRootIdentity: RecoveryFsIdentity | undefined;
@@ -607,7 +615,6 @@ export async function discoverCodexSessions(
 				"The canonical workspace path contains secret-shaped or control content.",
 			);
 		const sessionTitles = readCodexSessionTitles(codexHome);
-		const requested = new Set(requestedIds);
 		const found = new Map<string, CodexSessionSource>();
 		let relativePaths: string[];
 		if (rootAuthority) {
@@ -632,6 +639,7 @@ export async function discoverCodexSessions(
 			}
 			if (
 				!Array.isArray(parsed) ||
+				parsed.length > MAX_DISCOVERY_ENTRIES ||
 				parsed.some(relative => typeof relative !== "string" || path.isAbsolute(relative))
 			)
 				throw new CodexImportError("source_untrusted", "discovery", "Codex session discovery was malformed.");
@@ -639,8 +647,15 @@ export async function discoverCodexSessions(
 		} else {
 			const glob = new Bun.Glob("**/*.jsonl");
 			relativePaths = [];
-			for await (const relative of glob.scan({ cwd: sessionsRoot, onlyFiles: true, dot: false }))
+			for await (const relative of glob.scan({ cwd: sessionsRoot, onlyFiles: true, dot: false })) {
+				if (relativePaths.length >= MAX_DISCOVERY_ENTRIES)
+					throw new CodexImportError(
+						"source_untrusted",
+						"discovery",
+						"Codex session discovery exceeded the bounded entry limit.",
+					);
 				relativePaths.push(relative);
+			}
 			relativePaths.sort();
 		}
 		for (const relative of relativePaths) {
@@ -669,6 +684,12 @@ export async function discoverCodexSessions(
 					"malformed_source",
 					"discovery",
 					`Multiple Codex session files declare the same session ID: ${meta.id}`,
+				);
+			if (requested.size === 0 && found.size >= CODEX_IMPORT_BATCH_LIMIT)
+				throw new CodexImportError(
+					"content_too_large",
+					"discovery",
+					`Codex session import batch exceeds the maximum of ${CODEX_IMPORT_BATCH_LIMIT} sessions.`,
 				);
 			found.set(meta.id, meta);
 		}

@@ -7,6 +7,7 @@ import { getAgentDir, getSessionsDir, setAgentDir } from "@gajae-code/utils";
 import { ManagedSessionDescendantStore } from "../src/session/internal/managed-session-storage";
 import { SessionManager } from "../src/session/session-manager";
 import {
+	CODEX_IMPORT_BATCH_LIMIT,
 	closeCodexSessionAuthorities,
 	convertCodexSession,
 	discoverCodexSessions,
@@ -66,7 +67,7 @@ afterEach(async () => {
 	for (const value of roots.splice(0)) await fs.rm(value, { recursive: true, force: true });
 });
 
-describe("Codex session import", () => {
+describe("Codex import sanitization", () => {
 	it("sanitizes secrets and hostile controls", () => {
 		const text = sanitizeImportedString(
 			"Bearer abcdefghijklmnop sk-proj-abcdefghijklmnop eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart https://u:p@example.test/ password=hunter2 AKIA1234567890ABCDEF -----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY----- \u001b[31m<​|end|>\u202e",
@@ -121,6 +122,9 @@ describe("Codex session import", () => {
 		const input = "Authorization: Basic\nCookie: notes\nSet-Cookie: example\nHeader: keep-this";
 		expect(sanitizeImportedString(input)).toEqual({ value: input, redacted: 0 });
 	});
+});
+
+describe.skipIf(process.platform !== "linux")("Codex session import", () => {
 	it("returns a failing local-headless status when import discovery fails", async () => {
 		const output: string[] = [];
 		const result = await executeLocalHeadlessBuiltinSlashCommand("/import-session codex missing-id", {
@@ -192,6 +196,24 @@ describe("Codex session import", () => {
 		);
 		await expect(discoverCodexSessions(workspace, [], codexHome)).rejects.toMatchObject({
 			code: "malformed_source",
+		});
+	});
+	it("rejects automatic imports above the explicit session batch limit", async () => {
+		for (let index = 0; index <= CODEX_IMPORT_BATCH_LIMIT; index++) {
+			const id = `batch-limit-${index.toString().padStart(3, "0")}`;
+			await source(id, workspace, [message("assistant", "bounded")]);
+		}
+
+		expect(await importCodexSessions(workspace, [])).toMatchObject({
+			status: "failed",
+			results: [
+				{
+					status: "failed",
+					code: "content_too_large",
+					phase: "discovery",
+					retryable: false,
+				},
+			],
 		});
 	});
 

@@ -21,6 +21,7 @@ import { type ResumeSessionIdentity, SessionManager } from "../session/session-m
 import {
 	assertCodexWorkspaceIdentity,
 	CODEX_CONVERTER_VERSION,
+	CODEX_IMPORT_BATCH_LIMIT,
 	CODEX_MAPPING_VERSION,
 	CODEX_PROVIDER_ID,
 	CODEX_SANITIZER_VERSION,
@@ -1184,6 +1185,12 @@ export async function importCodexSessions(
 	let sources: CodexSessionSource[] = [];
 	try {
 		sources = await discoverCodexSessions(cwd, requestedIds, undefined, true);
+		if (requestedIds.length === 0 && sources.length > CODEX_IMPORT_BATCH_LIMIT)
+			throw new CodexImportError(
+				"content_too_large",
+				"discovery",
+				`Codex session import batch exceeds the maximum of ${CODEX_IMPORT_BATCH_LIMIT} sessions.`,
+			);
 		const canonicalWorkspace = sources[0]?.cwd ?? (await fs.realpath(cwd));
 		await retryCleanupPending(() => reconcileWorkspaceImports(canonicalWorkspace));
 	} catch (error) {

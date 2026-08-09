@@ -2168,16 +2168,17 @@ fn list_regular_descendants(
 	}
 	let initial = identity(directory)?;
 	let proc_path = format!("/proc/self/fd/{}", directory.as_raw_fd());
-	let mut names = std::fs::read_dir(proc_path)
-		.map_err(|_| "io_error")?
-		.map(|entry| entry.map_err(|_| "io_error").map(|entry| entry.file_name()))
-		.collect::<Result<Vec<_>, _>>()?;
-	names.sort();
-	for name in names {
+	let mut names = Vec::new();
+	for entry in std::fs::read_dir(proc_path).map_err(|_| "io_error")? {
+		let entry = entry.map_err(|_| "io_error")?;
 		*entries = entries.checked_add(1).ok_or("entry_limit_exceeded")?;
 		if *entries > max_entries {
 			return Err("entry_limit_exceeded");
 		}
+		names.push(entry.file_name());
+	}
+	names.sort();
+	for name in names {
 		let bytes = name.as_os_str().as_bytes();
 		let name_text = std::str::from_utf8(bytes).map_err(|_| "invalid_path")?;
 		let component = CString::new(bytes).map_err(|_| "invalid_path")?;
@@ -4146,6 +4147,28 @@ mod tests {
 		assert!(!dir.join("staged").exists(), "staging name removed after detach");
 
 		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn list_regular_descendants_bounds_enumeration_before_sorting() {
+		let temporary = TempDir::new();
+		let root = temporary.root();
+		managed_file(&root, "z", b"z");
+		managed_file(&root, "a", b"a");
+
+		let mut entries = 0;
+		let mut paths = Vec::new();
+		list_regular_descendants(&root, "", 0, 2, &mut entries, &mut paths)
+			.expect("a listing at the cap must succeed");
+		assert_eq!(paths, vec!["a".to_owned(), "z".to_owned()]);
+
+		let mut entries = 0;
+		let mut paths = Vec::new();
+		let error = list_regular_descendants(&root, "", 0, 1, &mut entries, &mut paths)
+			.expect_err("a listing beyond the cap must fail closed");
+		assert_eq!(error, "entry_limit_exceeded");
+		assert_eq!(entries, 2);
+		assert!(paths.is_empty(), "over-cap enumeration must not process a sorted prefix");
 	}
 
 	/// Seed a small directory tree and return its captured snapshot.
