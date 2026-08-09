@@ -215,6 +215,17 @@ describe("Codex session import", () => {
 		}
 	});
 
+	it("classifies malformed first metadata consistently during discovery", async () => {
+		const directory = path.join(codexHome, "sessions", "2026");
+		await fs.mkdir(directory, { recursive: true });
+		await fs.writeFile(path.join(directory, "malformed-metadata.jsonl"), "{not-json}\n", { mode: 0o600 });
+		for (const retainSourceAuthority of [false, true]) {
+			await expect(discoverCodexSessions(workspace, [], codexHome, retainSourceAuthority)).rejects.toMatchObject({
+				code: "malformed_source",
+				phase: "discovery",
+			});
+		}
+	});
 	it("classifies non-object JSONL records as malformed source", async () => {
 		await source("null-record", workspace, ["null\n"]);
 		const batch = await importCodexSessions(workspace, ["null-record"]);

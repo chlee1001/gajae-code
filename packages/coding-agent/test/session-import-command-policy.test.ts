@@ -15,12 +15,15 @@ import type {
 describe("session import command transport policy", () => {
 	it("is never advertised or dispatched over ACP", async () => {
 		expect(ACP_BUILTIN_SLASH_COMMANDS.some(command => command.name === "import-session")).toBe(false);
+		const output: string[] = [];
 		const runtime = {
-			output: async () => {
-				throw new Error("ACP denial must happen before output or discovery");
-			},
+			output: (text: string) => output.push(text),
 		} as unknown as AcpBuiltinCommandRuntime;
-		expect(await executeAcpBuiltinSlashCommand("/import-session codex", runtime)).toBe(false);
+		const availableLocally = lookupBuiltinSlashCommand("import-session") !== undefined;
+		expect(await executeAcpBuiltinSlashCommand("/import-session codex", runtime)).toEqual(
+			availableLocally ? { consumed: true } : false,
+		);
+		expect(output).toEqual(availableLocally ? ["Slash command /import-session is unavailable over ACP."] : []);
 	});
 
 	it("advertises and dispatches only where retained-descriptor authority is available", async () => {

@@ -43,7 +43,11 @@ export async function executeAcpBuiltinSlashCommand(
 	const parsed = parseSlashCommand(text);
 	if (!parsed) return false;
 	const command = lookupBuiltinSlashCommand(parsed.name);
-	if (!command?.handle || command.acp === false) {
+	if (command?.acp === false) {
+		await runtime.output(`Slash command /${parsed.name} is unavailable over ACP.`);
+		return { consumed: true };
+	}
+	if (!command?.handle) {
 		const diagnostic = formatUnknownBuiltinSlashCommandDiagnostic(parsed.name);
 		if (!diagnostic) return false;
 		await runtime.output(diagnostic);

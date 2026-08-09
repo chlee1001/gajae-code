@@ -302,9 +302,16 @@ function mapResponseItem(
 function parseSessionMeta(file: string, buffer: Buffer): CodexSessionSource | null {
 	const newline = buffer.indexOf(0x0a);
 	if (newline < 0) return null;
-	const first = JSON.parse(buffer.subarray(0, newline).toString("utf8")) as Record<string, unknown>;
-	if (first.type !== "session_meta" || !first.payload || typeof first.payload !== "object") return null;
-	const payload = first.payload as Record<string, unknown>;
+	let first: unknown;
+	try {
+		first = JSON.parse(buffer.subarray(0, newline).toString("utf8"));
+	} catch {
+		throw new CodexImportError("malformed_source", "discovery", "Codex session metadata was malformed.");
+	}
+	if (!first || typeof first !== "object" || Array.isArray(first)) return null;
+	const record = first as Record<string, unknown>;
+	if (record.type !== "session_meta" || !record.payload || typeof record.payload !== "object") return null;
+	const payload = record.payload as Record<string, unknown>;
 	const id = String(payload.id ?? payload.session_id ?? "");
 	const cwd = String(payload.cwd ?? "");
 	if (!CODEX_SESSION_ID.test(id) || !cwd) return null;
@@ -312,7 +319,7 @@ function parseSessionMeta(file: string, buffer: Buffer): CodexSessionSource | nu
 		id,
 		path: file,
 		cwd,
-		timestamp: safeTimestamp(payload.timestamp, safeTimestamp(first.timestamp, new Date(0).toISOString())),
+		timestamp: safeTimestamp(payload.timestamp, safeTimestamp(record.timestamp, new Date(0).toISOString())),
 		cliVersion: typeof payload.cli_version === "string" ? payload.cli_version : undefined,
 		modelProvider: typeof payload.model_provider === "string" ? payload.model_provider : undefined,
 	};
@@ -483,7 +490,8 @@ async function readSessionMeta(
 		)
 			return null;
 		return { meta, identity };
-	} catch {
+	} catch (error) {
+		if (error instanceof CodexImportError) throw error;
 		return null;
 	} finally {
 		await handle.close();
