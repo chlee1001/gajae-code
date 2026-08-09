@@ -153,7 +153,7 @@ export function sanitizeImportedString(value: string): { value: string; redacted
 							const quote = quotedValue === undefined ? "" : '"';
 							return `${name}${equals}${quote}${REDACTED_CREDENTIAL}${quote}`;
 						},
-					)`}`;
+					)}`;
 				}
 				return `${prefix}${raw.replace(
 					COOKIE_PAIR,
