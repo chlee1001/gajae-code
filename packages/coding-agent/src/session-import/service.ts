@@ -41,6 +41,8 @@ const IMPORT_LOCKS_DIRECTORY = "locks";
 const IMPORT_STAGING_DIRECTORY = "import-staging";
 const IMPORT_RECOVERY_RECEIPT = "artifact-recovery.json";
 const IMPORT_BUFFER_BYTES = 1024 * 1024;
+// The header, model, and provenance records are durable alongside the staged body.
+const TRANSCRIPT_PREFIX_RESERVE_BYTES = 1024 * 1024;
 const IMPORT_ARTIFACT_DIRECTORY =
 	/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
 
@@ -198,6 +200,10 @@ function quarantineBytes(conversion: CodexConversion): Buffer | null {
 	return Buffer.from(`${conversion.quarantine.map(record => JSON.stringify(record)).join("\n")}\n`, "utf8");
 }
 
+function serializedJsonLine(value: unknown): Buffer {
+	return Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+}
+
 class BufferedFileWriter {
 	readonly #handle: fs.FileHandle;
 	#pending: Buffer[] = [];
@@ -214,10 +220,6 @@ class BufferedFileWriter {
 		this.#pendingBytes += copy.byteLength;
 		this.bytes += copy.byteLength;
 		if (this.#pendingBytes >= IMPORT_BUFFER_BYTES) await this.flush();
-	}
-
-	async line(value: unknown): Promise<void> {
-		await this.write(Buffer.from(`${JSON.stringify(value)}\n`, "utf8"));
 	}
 
 	async flush(): Promise<void> {
@@ -818,8 +820,18 @@ async function stageConversion(
 				});
 				pendingToolNames.delete(event.callId);
 			}
+			const serialized = serializedJsonLine(entry);
+			const projectedBytes = bodyWriter.bytes + serialized.byteLength + TRANSCRIPT_PREFIX_RESERVE_BYTES;
+			if (projectedBytes > TARGET_TRANSCRIPT_MAX_BYTES)
+				throw new CodexImportError(
+					"content_too_large",
+					"source_event",
+					"Converted GJC transcript exceeds the import limit.",
+					TARGET_TRANSCRIPT_MAX_BYTES,
+					projectedBytes,
+				);
 			parentId = String(entry.id);
-			await bodyWriter.line(entry);
+			await bodyWriter.write(serialized);
 		});
 		await bodyWriter.flush();
 		await bodyHandle.sync();

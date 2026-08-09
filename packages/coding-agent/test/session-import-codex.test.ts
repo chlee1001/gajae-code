@@ -232,6 +232,49 @@ describe("Codex session import", () => {
 		});
 	});
 
+	it("rejects oversized converted output before completing a large staged transcript", async () => {
+		const id = "oversized-converted-output";
+		const targetTranscriptMaxBytes = 128 * 1024 * 1024;
+		const durablePrefixReserveBytes = 1024 * 1024;
+		const convertedText = "x".repeat(512 * 1024);
+		const events = Array.from({ length: 260 }, () => message("assistant", convertedText));
+		expect(Buffer.byteLength(`${meta(id, workspace)}${events.join("")}`, "utf8")).toBeGreaterThan(
+			targetTranscriptMaxBytes,
+		);
+		await source(id, workspace, events);
+
+		let stagedBodyBytes = 0;
+		const realOpen = fs.open.bind(fs);
+		const openSpy = vi.spyOn(fs, "open").mockImplementation((async (file: string, ...rest: unknown[]) => {
+			const handle = await (realOpen as (file: string, ...args: unknown[]) => Promise<fs.FileHandle>)(file, ...rest);
+			if (path.basename(String(file)) !== "body.jsonl") return handle;
+			const write = handle.write.bind(handle) as (...args: unknown[]) => Promise<unknown>;
+			(handle as unknown as { write: (...args: unknown[]) => Promise<unknown> }).write = async (...args) => {
+				const bytes = args[0];
+				if (bytes instanceof Uint8Array) stagedBodyBytes += bytes.byteLength;
+				return write(...args);
+			};
+			return handle;
+		}) as typeof fs.open);
+		try {
+			expect(await importCodexSessions(workspace, [id])).toMatchObject({
+				status: "failed",
+				results: [
+					{
+						status: "failed",
+						code: "content_too_large",
+						phase: "source_event",
+						limitBytes: targetTranscriptMaxBytes,
+					},
+				],
+			});
+			expect(stagedBodyBytes).toBeGreaterThan(0);
+			expect(stagedBodyBytes).toBeLessThanOrEqual(targetTranscriptMaxBytes - durablePrefixReserveBytes);
+		} finally {
+			openSpy.mockRestore();
+		}
+	}, 300_000);
+
 	it("imports, quarantines, resumes, continues, and deduplicates", async () => {
 		await source("fixture", workspace, [
 			message("user", "hello sk_abcdefghijklmnop"),
