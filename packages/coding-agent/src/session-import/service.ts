@@ -493,7 +493,8 @@ async function findExisting(
 	key: string,
 ): Promise<SessionImportSuccess | null> {
 	const listing = listManagedCandidates(scope);
-	if (listing.kind !== "complete") return null;
+	if (listing.kind !== "complete" || listing.invalid.length > 0) throw new Error("binding_invalid");
+
 	for (const candidate of listing.owned) {
 		const artifactDirectory = candidate.path.slice(0, -6);
 		const manifestPath = path.join(artifactDirectory, "codex-import-manifest.json");
@@ -707,7 +708,10 @@ async function reconcileStaleArtifactDirectory(
 }
 async function reconcileImportStaging(store: ManagedSessionDescendantStore, scopeDirectory: string): Promise<void> {
 	const stagingRoot = path.join(scopeDirectory, IMPORT_INTERNAL_DIRECTORY, IMPORT_STAGING_DIRECTORY);
-	const entries = await fs.readdir(stagingRoot, { withFileTypes: true }).catch(() => []);
+	const entries = await fs.readdir(stagingRoot, { withFileTypes: true }).catch(error => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	});
 	for (const entry of entries) {
 		if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("identity_mismatch");
 		const relativePath = `${IMPORT_INTERNAL_DIRECTORY}/${IMPORT_STAGING_DIRECTORY}/${entry.name}`;

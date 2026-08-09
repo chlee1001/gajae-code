@@ -398,6 +398,48 @@ describe("Codex session import", () => {
 			targetSessionId: result.targetSessionId,
 		});
 	});
+	it("fails closed when managed candidate listing is incomplete", async () => {
+		await source("listing-baseline", workspace, [message("assistant", "baseline")]);
+		const first = await importCodexSessions(workspace, ["listing-baseline"]);
+		const baseline = first.results[0];
+		if (!baseline || baseline.status === "failed") throw new Error("Expected baseline import success");
+		await fs.writeFile(path.join(path.dirname(baseline.targetPath), "unreadable.jsonl"), "{not-json}\n", {
+			mode: 0o600,
+		});
+		await source("listing-uncertain", workspace, [message("assistant", "uncertain")]);
+
+		expect(await importCodexSessions(workspace, ["listing-uncertain"])).toMatchObject({
+			status: "failed",
+			results: [{ status: "failed", code: "binding_invalid", phase: "internal" }],
+		});
+	});
+	it("distinguishes an absent staging root from a staging-root read error", async () => {
+		await source("staging-root-setup", workspace, [message("assistant", "setup")]);
+		const first = await importCodexSessions(workspace, ["staging-root-setup"]);
+		const setup = first.results[0];
+		if (!setup || setup.status === "failed") throw new Error("Expected staging setup import success");
+		const stagingRoot = path.join(
+			path.dirname(setup.targetPath),
+			".gjc-managed-session-internal",
+			"import-staging",
+		);
+
+		await fs.rm(stagingRoot, { recursive: true });
+		await source("missing-staging-root", workspace, [message("assistant", "missing root is first-run safe")]);
+		expect(await importCodexSessions(workspace, ["missing-staging-root"])).toMatchObject({
+			status: "success",
+			results: [{ status: "imported", sourceSessionId: "missing-staging-root" }],
+		});
+
+		await fs.rm(stagingRoot, { recursive: true });
+		await fs.writeFile(stagingRoot, "not a directory", { mode: 0o600 });
+		await source("blocked-staging-root", workspace, [message("assistant", "blocked")]);
+		expect(await importCodexSessions(workspace, ["blocked-staging-root"])).toMatchObject({
+			status: "failed",
+			results: [{ status: "failed", code: "internal_failed", phase: "internal" }],
+		});
+		expect((await fs.lstat(stagingRoot)).isFile()).toBe(true);
+	});
 	it("recovers only receipt-bound committed artifacts and preserves unbound directories", async () => {
 		await source("staging-orphan", workspace, [message("assistant", "recover staging")]);
 		const first = await importCodexSessions(workspace, ["staging-orphan"]);
