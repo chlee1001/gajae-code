@@ -32,6 +32,7 @@ const SECRET_ASSIGNMENT =
 const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{1,65536}?-----END [A-Z ]*PRIVATE KEY-----/gu;
 const URL_CREDENTIAL = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu;
 const HEADER_CREDENTIAL = /(\b(authorization|cookie|set-cookie)\b[ \t]*:[ \t]*)([^\r\n]*)/giu;
+const JSON_AUTHORIZATION_CREDENTIAL = /((?:\\?")authorization(?:\\?")\s*:\s*(?:\\?")?)([^\\",}\r\n]+)/giu;
 
 const COOKIE_PAIR = /(^|[;,][ \t]*)([^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;,\s]*))/gu;
 const SET_COOKIE_PAIR = /^([ \t]*[^=;,\s]+)([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|([^;\r\n]*))/u;
@@ -164,6 +165,15 @@ export function sanitizeImportedString(value: string): { value: string; redacted
 				)}`;
 			},
 		);
+	}
+	if (next.search(JSON_AUTHORIZATION_CREDENTIAL) >= 0) {
+		next = next.replace(JSON_AUTHORIZATION_CREDENTIAL, (_match: string, prefix: string, raw: string): string => {
+			const authorization = raw.trim();
+			if (!authorization || authorization.toLowerCase() === "basic") return `${prefix}${raw}`;
+			const scheme = /^([A-Za-z][A-Za-z0-9_-]{0,63})[ \t]+/u.exec(raw)?.[1];
+			redacted++;
+			return `${prefix}${scheme ? `${scheme} ${REDACTED_CREDENTIAL}` : REDACTED_CREDENTIAL}`;
+		});
 	}
 	if (/(?:Bearer\s|(?:sk[-_]|ghp_|github_pat_)|AKIA[A-Z0-9]{16})/iu.test(next))
 		next = replace(next, SECRET_VALUE, "[redacted-secret]");
