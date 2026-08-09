@@ -42,7 +42,7 @@ const message = (role: "user" | "assistant", text: string) =>
 
 async function source(id: string, cwd: string, events: string[]): Promise<void> {
 	const dir = path.join(codexHome, "sessions", "2026");
-	await fs.mkdir(dir, { recursive: true });
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 	await fs.writeFile(path.join(dir, `${id}.jsonl`), `${meta(id, cwd)}${events.join("")}`, { mode: 0o600 });
 	await fs.appendFile(
 		path.join(codexHome, "session_index.jsonl"),
@@ -57,6 +57,8 @@ beforeEach(async () => {
 	workspace = path.join(root, "workspace");
 	codexHome = path.join(root, "codex");
 	await fs.mkdir(workspace, { recursive: true });
+	await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
+	await fs.mkdir(path.join(codexHome, "sessions"), { recursive: true, mode: 0o700 });
 	setAgentDir(path.join(root, "agent"));
 	process.env.CODEX_HOME = codexHome;
 });
@@ -198,6 +200,28 @@ describe("Codex session import", () => {
 		await expect(discoverCodexSessions(workspace, ["hard-linked"], codexHome)).rejects.toMatchObject({
 			code: "source_not_found",
 		});
+	});
+	it("rejects group-writable retained Codex roots during discovery", async () => {
+		await source("untrusted-root", workspace, [message("user", "unsafe root")]);
+		await fs.chmod(path.join(codexHome, "sessions"), 0o775);
+		await expect(discoverCodexSessions(workspace, ["untrusted-root"], codexHome, true)).rejects.toMatchObject({
+			code: "source_untrusted",
+			phase: "discovery",
+		});
+	});
+	it("rejects retained conversion after its root becomes group-writable", async () => {
+		await source("conversion-untrusted-root", workspace, [message("user", "unsafe conversion root")]);
+		const sources = await discoverCodexSessions(workspace, ["conversion-untrusted-root"], codexHome, true);
+		try {
+			await fs.chmod(path.join(codexHome, "sessions"), 0o775);
+			await expect(convertCodexSession(sources[0]!)).rejects.toMatchObject({
+				code: "source_untrusted",
+				phase: "discovery",
+			});
+		} finally {
+			await fs.chmod(path.join(codexHome, "sessions"), 0o700);
+			await closeCodexSessionAuthorities(sources);
+		}
 	});
 	it("rejects workspace replacement after retained discovery", async () => {
 		await source("workspace-swap", workspace, [message("user", "trusted")]);

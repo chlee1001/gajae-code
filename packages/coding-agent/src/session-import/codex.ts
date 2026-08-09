@@ -541,6 +541,13 @@ function closeRetainedRoot(root: RecoveryFsRoot): void {
 	const closed = root.close();
 	if (!closed.ok && closed.code !== "closed") throw new Error(closed.code ?? "source_authority_close_failed");
 }
+function verifyRetainedRootOwnerOnly(root: RecoveryFsRoot): boolean {
+	try {
+		return root.verifyOwnerOnlyDirectory().ok;
+	} catch {
+		return false;
+	}
+}
 
 export async function discoverCodexSessions(
 	cwd: string,
@@ -562,6 +569,10 @@ export async function discoverCodexSessions(
 			rootAuthority = openRecoveryFsRoot(sessionsRoot);
 		} catch {
 			throw new CodexImportError("source_not_found", "discovery", "Codex sessions directory was not found.");
+		}
+		if (!verifyRetainedRootOwnerOnly(rootAuthority)) {
+			closeRetainedRoot(rootAuthority);
+			throw new CodexImportError("source_untrusted", "discovery", "Codex sessions directory is not trusted.");
 		}
 		const retained = rootAuthority.identity();
 		if (!retained.ok || !retained.identity) {
@@ -738,6 +749,8 @@ export async function convertCodexSession(
 	source: CodexSessionSource,
 	mappedEventSink?: CodexMappedEventSink,
 ): Promise<CodexConversion> {
+	if (source.authority && !verifyRetainedRootOwnerOnly(source.authority.root))
+		throw new CodexImportError("source_untrusted", "discovery", "Codex sessions directory is not trusted.");
 	if (!source.identity)
 		throw new CodexImportError("source_untrusted", "source", "Codex session source identity is unavailable.");
 	let retainedFile: RecoveryFsFile | undefined;
