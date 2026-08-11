@@ -4158,13 +4158,13 @@ mod tests {
 
 		let mut entries = 0;
 		let mut paths = Vec::new();
-		list_regular_descendants(&root, "", 0, 2, &mut entries, &mut paths)
+		list_regular_descendants(&root, "", 0, 2, &mut entries, &mut paths, false)
 			.expect("a listing at the cap must succeed");
 		assert_eq!(paths, vec!["a".to_owned(), "z".to_owned()]);
 
 		let mut entries = 0;
 		let mut paths = Vec::new();
-		let error = list_regular_descendants(&root, "", 0, 1, &mut entries, &mut paths)
+		let error = list_regular_descendants(&root, "", 0, 1, &mut entries, &mut paths, false)
 			.expect_err("a listing beyond the cap must fail closed");
 		assert_eq!(error, "entry_limit_exceeded");
 		assert_eq!(entries, 2);
