@@ -338,11 +338,12 @@ test("accepted turn.prompt submission failures emit a correlated terminal event"
 		},
 	} as never);
 	const sessionId = `terminal-failure-${process.pid}-${Date.now()}`;
+	let sessionName: string | undefined = "Terminal failure";
 	const ctx = {
 		cwd,
 		sessionManager: {
 			getSessionId: () => sessionId,
-			getSessionName: () => "Terminal failure",
+			getSessionName: () => sessionName,
 			getArtifactsDir: () => cwd,
 			getCwd: () => cwd,
 		},
@@ -376,6 +377,23 @@ test("accepted turn.prompt submission failures emit a correlated terminal event"
 		frame => frame.type === "control_response" && frame.id === "terminal-failure-request",
 	) as { result?: { commandId?: string; turnId?: string } };
 	expect(response.result).toMatchObject({ accepted: true });
+	sessionName = "Delayed title during terminal failure";
+	await waitFor(
+		() =>
+			frames.some(
+				frame =>
+					frame.type === "agent_failed" &&
+					frame.commandId === response.result?.commandId &&
+					frame.turnId === response.result?.turnId,
+			),
+		4000,
+		"live correlated terminal failure",
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "identity_header" && frame.title === sessionName),
+		4000,
+		"delayed title concurrent with terminal failure",
+	);
 	ws.send(JSON.stringify({ type: "event_replay", id: "terminal-failure-events", sinceGeneration: 1, sinceSeq: 0 }));
 	await waitFor(
 		() => frames.some(frame => frame.type === "event_replay_result" && frame.id === "terminal-failure-events"),
