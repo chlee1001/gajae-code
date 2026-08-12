@@ -1119,6 +1119,8 @@ interface SessionRuntime {
 	/** Discovery scope is fixed before publication; a live default endpoint is never rotated in place. */
 	endpointScope: "default" | "chat";
 	idleSeq: number;
+	/** Stops delayed session-name observation when this runtime loses authority. */
+	stopSessionNameObserver: () => void;
 	/** Interactive asks awaiting a remote answer, by action id. */
 	pendingInteractive: Map<string, PendingInteractiveAsk>;
 	/** Deregisters this session's ask answer source. */
@@ -4003,6 +4005,7 @@ export function createNotificationsExtension(
 			requestedRuntime.stopping = true;
 			requestedRuntime.abortEphemeralTurns();
 		}
+		if (reason === "session" && requestedRuntime) requestedRuntime.stopSessionNameObserver();
 		if (reason === "session" && requestedRuntime) {
 			// Fence the exact runtime before awaiting its startup promise: a late start
 			// must observe removal and clean itself up rather than becoming reachable.
@@ -6457,6 +6460,7 @@ export function createNotificationsExtension(
 			id,
 			endpointScope: isolateChatEndpoint ? "chat" : "default",
 			idleSeq: 0,
+			stopSessionNameObserver: () => {},
 			pendingInteractive,
 			brokerRegistrationActive: false,
 			hostStopped: false,
@@ -7162,6 +7166,32 @@ export function createNotificationsExtension(
 			}
 
 			server.pushFrame(JSON.stringify(identityHeader));
+			let publishedSessionName = identityHeader.title;
+			const sessionNameObserver = setInterval(() => {
+				if (runtime?.stopping || runtimes.get(id) !== runtime) return;
+				const sessionName = ctx.sessionManager.getSessionName();
+				if (!sessionName || sessionName === publishedSessionName) return;
+				publishedSessionName = sessionName;
+				const identity = {
+					type: "identity_header",
+					sessionId: id,
+					...buildIdentity(ctx.cwd, sessionName, telegramTopicsEnabled()),
+				};
+				host.emitEvent({ kind: identity.type, payload: identity });
+				server.pushFrame(JSON.stringify(identity));
+			}, 250);
+			runtime.stopSessionNameObserver = () => clearInterval(sessionNameObserver);
+			const sessionNameAfterStartup = ctx.sessionManager.getSessionName();
+			if (sessionNameAfterStartup && sessionNameAfterStartup !== publishedSessionName) {
+				publishedSessionName = sessionNameAfterStartup;
+				const identity = {
+					type: "identity_header",
+					sessionId: id,
+					...buildIdentity(ctx.cwd, sessionNameAfterStartup, telegramTopicsEnabled()),
+				};
+				host.emitEvent({ kind: identity.type, payload: identity });
+				server.pushFrame(JSON.stringify(identity));
+			}
 			const agentDir = lifecycleAgentDir ?? settings?.getAgentDir?.();
 			if (lifecycleRequired && !agentDir) throw new Error("Lifecycle SDK host requires an agent directory.");
 
@@ -7651,6 +7681,7 @@ export function createNotificationsExtension(
 		if (!predecessor || cleanupRetries.has(id))
 			throw new Error(`notifications: predecessor runtime ${id} is not safely send-capable.`);
 		predecessor.inboundFenced = true;
+		predecessor.stopSessionNameObserver();
 		// Release broker/host authority while leaving the native server alive for
 		// the one accepted terminal response. stopAndWait is deferred to stopSession.
 		const stopped = await predecessor.host.stop();

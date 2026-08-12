@@ -388,6 +388,32 @@ test("accepted turn.prompt submission failures emit a correlated terminal event"
 	await handlers.get("session_shutdown")!({ type: "session_shutdown" }, ctx);
 });
 
+test("publishes a delayed session title without waiting for another agent lifecycle event", async () => {
+	await withNotifications(async () => {
+		const harness = createHarness("gjc-notif-delayed-title-", undefined);
+		const frames = await startAndConnect(harness);
+		expect(frames.some(frame => frame.type === "identity_header")).toBe(false);
+
+		harness.name = "Delayed generated title";
+		await waitFor(
+			() => frames.some(frame => frame.type === "identity_header" && frame.title === harness.name),
+			4000,
+			"delayed session title identity",
+		);
+		const titledCount = frames.filter(
+			frame => frame.type === "identity_header" && frame.title === "Delayed generated title",
+		).length;
+		await sleep(500);
+		expect(
+			frames.filter(frame => frame.type === "identity_header" && frame.title === "Delayed generated title"),
+		).toHaveLength(titledCount);
+
+		await harness.handlers.get("session_shutdown")!({ type: "session_shutdown" }, harness.ctx);
+		harness.name = "Title after shutdown";
+		await sleep(500);
+		expect(frames.some(frame => frame.title === "Title after shutdown")).toBe(false);
+	});
+});
 test("session_switch rotates SDK authority while preserving topic identity", async () => {
 	const prevEnv = process.env.GJC_NOTIFICATIONS;
 	process.env.GJC_NOTIFICATIONS = "1";
