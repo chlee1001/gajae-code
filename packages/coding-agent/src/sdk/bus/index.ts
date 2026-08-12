@@ -7169,6 +7169,7 @@ export function createNotificationsExtension(
 			let publishedSessionName = identityHeader.title;
 			const sessionNameObserver = setInterval(() => {
 				if (runtime?.stopping || runtimes.get(id) !== runtime) return;
+				if (ctx.sessionManager.getSessionId() !== id) return;
 				const sessionName = ctx.sessionManager.getSessionName();
 				if (!sessionName || sessionName === publishedSessionName) return;
 				publishedSessionName = sessionName;
@@ -7181,7 +7182,8 @@ export function createNotificationsExtension(
 				server.pushFrame(JSON.stringify(identity));
 			}, 250);
 			runtime.stopSessionNameObserver = () => clearInterval(sessionNameObserver);
-			const sessionNameAfterStartup = ctx.sessionManager.getSessionName();
+			const sessionNameAfterStartup =
+				ctx.sessionManager.getSessionId() === id ? ctx.sessionManager.getSessionName() : undefined;
 			if (sessionNameAfterStartup && sessionNameAfterStartup !== publishedSessionName) {
 				publishedSessionName = sessionNameAfterStartup;
 				const identity = {

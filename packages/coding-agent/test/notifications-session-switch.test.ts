@@ -492,6 +492,10 @@ test("session_switch fences the predecessor title observer", async () => {
 		const predecessorFrames = await startAndConnect(harness);
 		const predecessorId = harness.sid;
 		harness.sid = `successor-${predecessorId}`;
+		harness.name = "Successor title before switch commit";
+		await sleep(500);
+		expect(predecessorFrames.some(frame => frame.title === harness.name)).toBe(false);
+
 		harness.name = undefined;
 		await harness.handlers.get("session_switch")!(
 			{ type: "session_switch", previousSessionFile: harness.previousSessionFile(predecessorId) },
