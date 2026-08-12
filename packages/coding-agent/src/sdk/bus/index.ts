@@ -7181,6 +7181,7 @@ export function createNotificationsExtension(
 				host.emitEvent({ kind: identity.type, payload: identity });
 				server.pushFrame(JSON.stringify(identity));
 			}, 250);
+			sessionNameObserver.unref?.();
 			runtime.stopSessionNameObserver = () => clearInterval(sessionNameObserver);
 			const sessionNameAfterStartup =
 				ctx.sessionManager.getSessionId() === id ? ctx.sessionManager.getSessionName() : undefined;
