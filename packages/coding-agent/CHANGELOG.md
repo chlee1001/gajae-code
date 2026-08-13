@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+- Removed `task.autorouting.preset`; preset-only autorouting configuration is now inactive until tiers are generated from the smart-routing setup.
+- Breaking public TypeScript contracts: removed `AutoroutingEffective.source`, `RoutingOutcome.source`, `AUTOROUTING_PRESETS`, `AutoroutingPresetId`, and `resolveTierMap` from `./config/*`, plus `TaskRoutingEvidence.source` from `./task/*`.
+- `/routing status` now labels settings-derived tiers as `hand-authored tiers`, `generated`, `generated, hand-edited`, or fail-closed `hand-authored tiers` when provenance is malformed.
+- Receipt and summary routing `note` values now use tier/fallback/resume components only; preset/source components are removed.
+
 ### Added
 - Added built-in `grok-46-{eco,medium,pro}` role profiles using the existing xAI OAuth/subscription provider, and updated `/model` so direct xAI Grok 4.5/4.6 assignment prompts for a supported reasoning effort instead of retaining `(inherit)`. Grok 4.5 offers `low`/`medium`/`high`; Grok 4.6 adds `xhigh`.
 - The model selector and argument-based `/model` assignment now require an explicit supported reasoning effort when assigning any reasoning-capable model to DEFAULT, regardless of provider. The selected `:effort` is persisted in `modelRoles.default`, while non-reasoning assignments and provider-general role-less temporary switches remain direct.
