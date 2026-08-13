@@ -2,8 +2,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { logger, postmortem } from "@gajae-code/utils";
 import { YAML } from "bun";
-import { applyAtomicYamlPatches, setByPath } from "../../config/atomic-yaml-patch";
 import type { Settings } from "../../config/settings";
+import { isProcessIncarnation, processIncarnation } from "../broker/process-incarnation";
+import { applyAtomicYamlPatches, setByPath } from "../../config/atomic-yaml-patch";
 import {
 	getNotificationConfig,
 	isProviderEffectivelyEnabled,
@@ -41,6 +42,7 @@ export interface RunDaemonInternalDeps {
 	DaemonImpl?: TelegramDaemonConstructor;
 	processPid?: number;
 	pidAlive?: (pid: number) => boolean;
+	pidIncarnation?: (pid: number) => string | undefined;
 	/** Clock used by the ownership-progress watchdog; defaults to `Date.now`. */
 	now?: () => number;
 	/** Timer pair backing the ownership-progress watchdog; defaults to globals. */
@@ -50,6 +52,51 @@ export interface RunDaemonInternalDeps {
 	readDaemonState?: (settings: Settings) => Promise<DaemonState | undefined>;
 	/** Loads the verified machine-local identity; injectable so daemon tests do not touch the host. */
 	loadInstallationHostId?: () => Promise<string>;
+}
+
+type DaemonOwnerTuple = {
+	ownerId: string;
+	acquisitionId: string;
+	pid: number;
+	incarnation: string;
+};
+
+function readyOwnerTuple(state: DaemonState | undefined): DaemonOwnerTuple | undefined {
+	if (
+		!state ||
+		!hasSafeDaemonStateShape(state) ||
+		state.stoppedAt !== undefined ||
+		typeof state.ownerId !== "string" ||
+		state.ownerId.length === 0 ||
+		typeof state.acquisitionId !== "string" ||
+		state.acquisitionId.length === 0 ||
+		!Number.isSafeInteger(state.pid) ||
+		state.pid <= 0 ||
+		!isProcessIncarnation(state.incarnation)
+	)
+		return undefined;
+	return {
+		ownerId: state.ownerId,
+		acquisitionId: state.acquisitionId,
+		pid: state.pid,
+		incarnation: state.incarnation,
+	};
+}
+
+function ownerTuplesEqual(left: DaemonOwnerTuple, right: DaemonOwnerTuple): boolean {
+	return (
+		left.ownerId === right.ownerId &&
+		left.acquisitionId === right.acquisitionId &&
+		left.pid === right.pid &&
+		left.incarnation === right.incarnation
+	);
+}
+
+function daemonOwnerTuple(ownerId: string, deps: RunDaemonInternalDeps): DaemonOwnerTuple | undefined {
+	const pid = deps.processPid ?? process.pid;
+	const incarnation = (deps.pidIncarnation ?? processIncarnation)(pid);
+	if (!Number.isSafeInteger(pid) || pid <= 0 || !isProcessIncarnation(incarnation)) return undefined;
+	return { ownerId, acquisitionId: ownerId, pid, incarnation };
 }
 
 /** Ownership-watchdog cadence while the daemon process is running. */
@@ -276,16 +323,53 @@ export async function runDaemonInternal(argv: string[], deps: RunDaemonInternalD
 		if (!watchdogActive || watchdogTickInFlight || stopRequested) return;
 		watchdogTickInFlight = true;
 		try {
-			const snapshot = deps.readDaemonState
-				? { state: await readState(settings as Settings), effectiveHeartbeatAt: undefined }
+			const isInjectedState = Boolean(deps.readDaemonState);
+			const snapshot = isInjectedState
+				? { state: await readState(settings as Settings), effectiveHeartbeatAt: undefined, ownerTag: undefined as unknown as { ownerId: string; acquisitionId: string; pid: number; incarnation: string } | null }
 				: await readOwnerFreshnessSnapshot({ settings: settings as Settings });
 			const state = snapshot.state;
-			const heartbeatAt = snapshot.effectiveHeartbeatAt ?? state?.heartbeatAt;
+			const heartbeatAt = (snapshot as { effectiveHeartbeatAt?: number }).effectiveHeartbeatAt ?? state?.heartbeatAt;
 			if (!watchdogActive || !state) return;
-			if (state.ownerId !== ownerId) {
-				stopRequested = true;
-				daemon.requestStop("stop");
-				return;
+			// Self-fencing: prove the complete lock/state tuple (ownerId, acquisitionId, pid, incarnation).
+			// Product-owned proof uses the lock/state tuple; a bare ownerId equality alone is not authorization.
+			const publishedOwner = readyOwnerTuple(state);
+			if (isInjectedState) {
+				// Test seam path: deps.readDaemonState injects state without lock. Prove full tuple against daemon's own stable identity.
+				const expectedOwner = daemonOwnerTuple(ownerId, deps);
+				// Without stable self incarnation authority, fail closed (Windows or unavailable probe).
+				if (!publishedOwner || !expectedOwner) return;
+				if (!ownerTuplesEqual(publishedOwner, expectedOwner)) {
+					stopRequested = true;
+					daemon.requestStop("stop");
+					return;
+				}
+			} else {
+				// Production path: prove the published state matches the lock-backed ownerTag; then prove supersession against current tuple.
+				if (!publishedOwner) return;
+				const snapshotTag = (snapshot as { ownerTag?: { ownerId: string; acquisitionId: string; pid: number; incarnation: string } | null }).ownerTag;
+				if (!snapshotTag) return;
+				// Lock/state mismatch or missing lock is ambiguous — fail closed, do not selfterminate on noise.
+				if (
+					snapshotTag.ownerId !== publishedOwner.ownerId ||
+					snapshotTag.acquisitionId !== publishedOwner.acquisitionId ||
+					snapshotTag.pid !== publishedOwner.pid ||
+					snapshotTag.incarnation !== publishedOwner.incarnation
+				)
+					return;
+				// Positive supersession: published authoritative tuple no longer matches this daemon's acquisition.
+				// We prove via exact tuple comparison; acquisitionId == ownerId for daemon-spawned owners.
+				const selfTuple = daemonOwnerTuple(ownerId, deps);
+				if (selfTuple && !ownerTuplesEqual(publishedOwner, selfTuple)) {
+					stopRequested = true;
+					daemon.requestStop("stop");
+					return;
+				}
+				if (!selfTuple && publishedOwner.ownerId !== ownerId) {
+					// No self incarnation proof available (Windows native unavailable) — fall back to ownerId only, but only when we cannot prove otherwise.
+					stopRequested = true;
+					daemon.requestStop("stop");
+					return;
+				}
 			}
 			if (lastHeartbeatAt === undefined || heartbeatAt !== lastHeartbeatAt) {
 				lastHeartbeatAt = heartbeatAt;

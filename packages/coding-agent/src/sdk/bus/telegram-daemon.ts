@@ -12,6 +12,7 @@ import type { DaemonRuntimeInfo } from "../../daemon/control-types";
 import { resolveGjcRuntimeSpawnInfo } from "../../daemon/runtime";
 import { resizeImageBuffer } from "../../utils/image-resize";
 import { isProcessIncarnation, processIncarnation } from "../broker/process-incarnation";
+import { agentDirDigest } from "./daemon-paths";
 import { getNotificationConfig, isProviderEffectivelyEnabled, isTelegramComplete, tokenFingerprint } from "./config";
 import {
 	parseInThreadConfigCommand,
@@ -2512,6 +2513,21 @@ export async function renewDaemonHeartbeat(input: {
 		}
 		try {
 			await writeJsonAtomic(fsImpl, paths.state, { ...boundState, ownershipPhase: "ready" });
+			try {
+				const { writeTelegramOwnerMarker } = await import("./telegram-daemon-owner-registry");
+				const agentDir = input.settings.getAgentDir();
+				await writeTelegramOwnerMarker(fsImpl, agentDir, {
+					version: 1,
+					agentDir,
+					agentDirDigest: agentDirDigest(agentDir),
+					ownerId: input.ownerId,
+					acquisitionId,
+					pid,
+					incarnation,
+					createdAt: heartbeatAt,
+					startedAt: boundState.startedAt,
+				});
+			} catch {}
 			return true;
 		} catch {
 			logger.warn("notifications: Telegram daemon ready publication failed after sidecar proof; retiring ownership");
@@ -2883,6 +2899,10 @@ export async function releaseDaemonOwnership(input: {
 		const lock = await readOwnershipLock(fsImpl, paths.lock);
 		if (!ownershipLockMatchesState(lock, state)) return;
 		await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
+		try {
+			const { removeTelegramOwnerMarker } = await import("./telegram-daemon-owner-registry");
+			await removeTelegramOwnerMarker(fsImpl, input.settings.getAgentDir(), state.acquisitionId ?? state.ownerId);
+		} catch {}
 		if (await transitionLockIsHeldByCaller({ fs: fsImpl, path: paths.steal, lock: transition }))
 			await unlinkOwnershipLockExactly(fsImpl, paths.lock, lock);
 	} finally {
@@ -2939,6 +2959,10 @@ export async function markDaemonOwnerStopped(input: {
 		const lock = await readOwnershipLock(fsImpl, paths.lock);
 		if (!ownershipLockMatchesState(lock, state)) return false;
 		await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
+		try {
+			const { removeTelegramOwnerMarker } = await import("./telegram-daemon-owner-registry");
+			await removeTelegramOwnerMarker(fsImpl, input.settings.getAgentDir(), state.acquisitionId ?? state.ownerId);
+		} catch {}
 		return true;
 	} catch {
 		// A dying process cannot afford to fail louder than it already is.
@@ -3496,6 +3520,36 @@ async function ensureTelegramDaemonRunningDetailedOnce(
 			timeoutMs: deps.readinessTimeoutMs,
 		})
 	) {
+		// Bounded orphan sweep: after durable ready publication, reconcile physically live but non-authoritative
+		// owners using the product-owned marker registry (agent-dir digest + acquisition + incarnation). The sweep is
+		// fail-closed; when incarnation authority is unavailable on Windows, no orphan is signaled. No dual-poller
+		// window: the current owner is ready and verified before any termination.
+		try {
+			const curState = await readOwnerFreshnessSnapshot({ settings: input.settings, fs: deps.fs });
+			const cur = curState.state;
+			if (cur && hasSafeDaemonStateShape(cur) && cur.ownershipPhase === "ready") {
+				const { reapTelegramDaemonOrphans, writeTelegramOrphanRecoveryReceipt } = await import("./telegram-daemon-orphan-reap");
+				const { nativeProcessBindings } = await import("@gajae-code/utils/native-process");
+				const pidForReap = cur.pid;
+				const incarnationForReap = cur.incarnation;
+				const { decisions: _decisions, receipt } = await reapTelegramDaemonOrphans({
+					agentDir: input.settings.getAgentDir(),
+					currentOwnerId: cur.ownerId,
+					currentAcquisitionId: cur.acquisitionId ?? cur.ownerId,
+					currentPid: pidForReap,
+					currentIncarnation: incarnationForReap,
+					fsImpl: deps.fs ?? (await import("node:fs")).promises as unknown as TelegramDaemonFs,
+					deps: {
+						pidAlive: deps.pidAlive ?? ((pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; } }),
+						pidIncarnation: deps.pidIncarnation ?? defaultPidIncarnation,
+						processReference: deps.processReference ?? ((pid: number) => { try { const r = nativeProcessBindings().Process.fromPid(pid) as { incarnation?: unknown; signalRoot?: (s: number) => boolean } | null; if (!r || typeof r.incarnation !== "string" || !isProcessIncarnation(r.incarnation)) return undefined; return { incarnation: r.incarnation, termination: process.platform === "win32" ? "hard" as const : "cooperative" as const, signalRoot: (sig: NodeJS.Signals) => { const code = (require("node:os") as typeof import("node:os")).constants.signals[sig]; if (code !== undefined) { const ok = (r as { signalRoot(s: number): boolean }).signalRoot(code); if (!ok) throw new Error("signalRoot failed"); } } }; } catch { return undefined; } }),
+						platform: deps.platform,
+						now: deps.now,
+					},
+				});
+				await writeTelegramOrphanRecoveryReceipt(deps.fs ?? (await import("node:fs")).promises as unknown as TelegramDaemonFs, input.settings.getAgentDir(), receipt).catch(() => undefined);
+			}
+		} catch {}
 		return "spawned";
 	}
 	throw new Error("Telegram daemon did not become ready after spawning");

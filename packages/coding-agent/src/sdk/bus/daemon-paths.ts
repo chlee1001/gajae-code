@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as path from "node:path";
 
 /**
@@ -19,7 +20,24 @@ export interface DaemonPaths {
 	diagnostic: string;
 	aliases: string;
 	seenUpdates: string;
+	ownerRegistry: string;
+	recoveryReceipt: string;
 }
+
+export function agentDirDigest(agentDir: string): string {
+	return crypto.createHash("sha256").update(path.resolve(agentDir)).digest("hex");
+}
+
+export function telegramDaemonOwnerMarkerPath(agentDir: string, acquisitionId: string): string {
+	const safe =
+		/^[A-Za-z0-9_.-]+$/.test(acquisitionId) && acquisitionId.length > 0 && acquisitionId.length <= 128
+			? acquisitionId
+			: crypto.createHash("sha256").update(acquisitionId).digest("hex");
+	return path.join(daemonPaths(agentDir).ownerRegistry, `${safe}.json`);
+}
+
+export const daemonOwnerMarkerPath = telegramDaemonOwnerMarkerPath;
+export const telegramDaemonProcessMarkerPath = telegramDaemonOwnerMarkerPath;
 
 export function daemonPaths(agentDir: string): DaemonPaths {
 	const dir = path.join(agentDir, "notifications");
@@ -34,5 +52,7 @@ export function daemonPaths(agentDir: string): DaemonPaths {
 		aliases: path.join(dir, "telegram-callback-aliases.json"),
 		diagnostic: path.join(dir, "telegram-daemon.diagnostics.json"),
 		seenUpdates: path.join(dir, "telegram-seen-updates.json"),
+		ownerRegistry: path.join(dir, "telegram-daemon-owners"),
+		recoveryReceipt: path.join(dir, "telegram-daemon.recovery.json"),
 	};
 }
